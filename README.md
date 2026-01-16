@@ -1,50 +1,90 @@
-# Decision Context Tracing
+# Decision Context Agent (SkitHub)
 
 **From Raw Agent Logs to Organizational Physics.**
 
-This project builds a three-stage intelligence pipeline that transforms raw AI agent conversation logs into a structured **Learned Pattern Library**—an emergent catalog of decision heuristics that define the "physics" of successful work in this codebase.
+> "The schema isn't something you define upfront. It emerges from the walks."
 
-## 🚀 The Pipeline
+## 🔍 Overview
 
-1.  **Milestone 1 (Event Extraction)**: Flatten complex Gemini CLI JSON logs into a clean, searchable event stream (`events.json`).
-2.  **Milestone 2 (Reasoning Traces)**: Use **DSPy + Gemini-3-Flash** to extract the *why* behind agent decisions (patterns, reasoning, outcomes) into `reasoning_traces_automated.json`.
-3.  **Milestone 3 (Pattern Synthesis)**: Recursively synthesize global principles from individual session learnings into a **Gold Standard Pattern Library** (`learned_patterns.json`).
+This repository hosts the **Decision Context Agent** (also referred to as SkitHub), an experimental intelligence pipeline designed to transform raw AI agent conversation logs into a structured **Learned Pattern Library**.
 
-## 🧠 The Learned Pattern Library
+Unlike traditional logging systems that capture *what* happened, this system uses advanced recursive reasoning (DSPy + Gemini) to extract the *why*—the implicit decision heuristics and "organizational physics" that distinguish successful expert work from failure.
 
-Our pattern library isn't a pre-defined schema; it is the **residue of successful coordination**. It identifies 8 core behavioral patterns that separate successful senior-level work from failure in this environment.
+## 🧠 The Core Problem & Solution
 
-- **Holistic Context Gathering**: Mandatory "look before leaping."
-- **Environment-Aware Recovery**: Fast pivoting when standard tools fail.
-- **Terminal-State Consistency**: Preventing UI/UX hangs.
-- **Fidelity-Verification**: Trusting but verifying non-deterministic outputs.
+**The Problem:** Most AI agents lack "transferable wisdom." They don't learn from past sessions. Explicit ontologies (databases, predefined schemas) fail to capture the subtle, implicit context of *why* a decision was made.
 
-## 📁 Repository Structure
+**The Solution:** Instead of pre-defining a schema, we let it emerge. We treat agent trajectories (logs) as training data for an organizational world model.
+1.  **Record** immutable events.
+2.  **Derive** reasoning traces (the "thought process" behind the action).
+3.  **Synthesize** global patterns that can guide future agents.
 
-- `parse_session.py`: Log-to-Event parser.
-- `derive_reasoning_traces.py`: Event-to-Trace insight extractor (DSPy).
-- `synthesize_patterns.py`: Trace-to-Patterns recursive synthesizer (DSPy).
-- `data/`: Contains processed sessions and the global `/patterns`.
-- `sessions/`: Raw Gemini CLI logs.
-- `papers/`: Research foundation for context curation and agent architectures.
+## 🏗 Technical Architecture
 
-## 🛠️ Usage
+This project implements a three-stage processing pipeline:
 
-This project uses `uv` for script execution.
+### 1. Event Extraction (ETL)
+Flattens complex, nested CLI logs (JSON) into a linear, analyzable stream of events.
+*   **Input:** Raw Gemini CLI session logs.
+*   **Output:** `events.json` (Time, Actor, Message, Tool Use).
+*   **Tool:** `parse_session.py`
 
+### 2. Reasoning Traces (DSPy + Gemini-3-Flash)
+Uses **DSPy** programs to analyze the event stream. It reconstructs the agent's "State of Mind" at critical decision points, identifying:
+*   **Context:** What did the agent know?
+*   **Intent:** What was it trying to achieve?
+*   **Outcome:** Did it work?
+*   **Output:** `reasoning_traces_automated.json`
+
+### 3. Pattern Synthesis (RLM-PoT)
+Recursively aggregates individual traces to find recurring behaviors. It generates a **Learned Pattern Library**—a catalog of "physics" for this specific codebase (e.g., "Holistic Context Gathering", "Environment-Aware Recovery").
+*   **Method:** **RLM-PoT (Recursive Language Model via Program of Thought)**. Instead of stuffing context, the model writes code to query and analyze the traces, ensuring 100% deterministic coverage of the dataset.
+
+## 🚀 Getting Started
+
+This project uses `uv` for fast, reliable Python package and environment management.
+
+### Prerequisites
+*   Python 3.12+
+*   `uv` installed (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
+
+### Installation
 ```bash
-# Extract events from a raw log
-uv run parse_session.py sessions/gemini/your_session.json
-
-# Derive reasoning traces for a session
-uv run derive_reasoning_traces.py -i data/your_session/events.json
-
-# Synthesize the global pattern library
-uv run synthesize_patterns.py
+git clone https://github.com/yourusername/decision-context-agent.git
+cd decision-context-agent
+uv sync
 ```
 
-## 📜 Documentation
+### Usage Pipeline
 
-- [Milestone 3: Learned Patterns](./MILESTONE_3_LEARNED_PATTERNS.md)
-- [README: What is a Learned Pattern Library?](./README_learned_patterns.md)
-- [Vision & Philosophy](./VISION.md)
+1.  **Parse a Session:**
+    ```bash
+    uv run parse_session.py sessions/gemini/raw_log.json
+    ```
+
+2.  **Extract Reasoning:**
+    ```bash
+    uv run derive_reasoning_traces.py -i data/processed/events.json
+    ```
+
+3.  **Synthesize Patterns:**
+    ```bash
+    uv run synthesize_patterns.py
+    ```
+
+## 📂 Repository Structure
+
+*   `bench_agents/`: Agent implementations for evaluation.
+*   `docs/`: Documentation.
+    *   `external/`: Third-party integrations & benchmarks (SWE-bench).
+    *   `information/`: Vision, theory, and architectural concepts.
+    *   `task-planning/`: Project status and goals.
+*   `rlm_pot/`: Implementation of the Recursive Language Model / Program of Thought executor.
+*   `data/`: Storage for processed traces and the global pattern library.
+*   `scripts/`: Utility scripts for benchmarks and evaluations.
+
+## 📚 Further Reading
+
+*   **[Vision & Philosophy](docs/information/VISION.md):** The "North Star" for this project.
+*   **[RLM-PoT Architecture](docs/information/INFO_RLM_POT_SUMMARY.md):** Deep dive into the "Thinking in Code" approach.
+*   **[Idea Origin](docs/information/IDEA.md):** The tweetstorm that sparked the concept of Context Graphs.
