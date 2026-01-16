@@ -1,0 +1,5 @@
+# Terminal-Bench task IDs to run as a suite (one per line).
+# Add/remove tasks here over time.
+
+hello-world
+swe-bench-langcodes

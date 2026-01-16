@@ -1,0 +1,25 @@
+[project]
+name = "decision-context-tracing"
+version = "0.1.0"
+description = "A tool for tracing the decision context of an agent."
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "agent-client-protocol>=0.7.1",
+    "datasets>=3.2.0",
+    "dspy>=3.0.4",
+    "google-cloud-aiplatform>=1.132.0",
+    "pydantic>=2.12.5",
+    "swebench>=4.1.0",
+    "terminal-bench>=0.2.18",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.10",
+]
+
+[tool.uv.workspace]
+members = [
+    "data/benchmarks/terminal-bench-core/0.1.1/hello-world/20260108_222706/workspace",
+]

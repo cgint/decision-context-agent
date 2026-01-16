@@ -1,0 +1,20 @@
+.ruff_cache/
+.venv
+.DS_Store
+.vscode/
+node_modules/
+__pycache__/
+
+# Ignore Code Giant output directory
+.codegiant/
+
+# *.jsonl
+sessions/raw/
+data/swebench_cache/
+data/swebench_repo_cache/
+data/swebench_eval_archive/
+data/online_replay/
+# data/swebench_eval/
+
+logs/
+eval/

@@ -1,0 +1,63 @@
+@startuml
+!theme plain
+skinparam backgroundColor #1a1a2e
+skinparam defaultFontColor #eaeaea
+skinparam ArrowColor #00d9ff
+skinparam RectangleBackgroundColor #16213e
+skinparam RectangleBorderColor #00d9ff
+skinparam DatabaseBackgroundColor #0f3460
+skinparam DatabaseBorderColor #e94560
+skinparam NoteBackgroundColor #0f3460
+skinparam NoteBorderColor #e94560
+skinparam ActivityBackgroundColor #16213e
+skinparam ActivityBorderColor #00d9ff
+
+title **From Chat History to Decision Heuristics**
+
+rectangle "**Raw AI Agent Logs**\n(Gemini CLI JSON)" as raw #0f3460
+
+rectangle "**Milestone 1**\nEvent Extraction" as m1 {
+  rectangle "parse_session.py" as parser
+}
+
+database "events.json\n(Flattened Event Stream)" as events
+
+rectangle "**Milestone 2**\nReasoning Trace Derivation" as m2 {
+  rectangle "derive_reasoning_traces.py" as deriver
+  note right of deriver
+    **DSPy + Gemini-3-Flash**
+    Extracts the "why" behind
+    agent decisions
+  end note
+}
+
+database "reasoning_traces_automated.json\n(Pattern, Reasoning, Outcome)" as traces
+
+rectangle "**Milestone 3**\nPattern Synthesis" as m3 {
+  rectangle "Phase A: Global Synthesis\n(All Traces → Patterns)" as phaseA
+  rectangle "Phase B: Per-Session Learning\n(Session Traces → Local Patterns)" as phaseB
+  rectangle "Phase C: Recursive Synthesis\n(Local Patterns → Meta-Patterns)" as phaseC
+  rectangle "Phase D: Consolidation\n(Decision Heuristics Catalog)" as phaseD
+}
+
+database "**Learned Pattern Library**\nlearned_patterns.json" as patterns #e94560
+
+raw --> m1 : flatten
+m1 --> events
+events --> m2 : analyze
+m2 --> traces
+traces --> m3 : synthesize
+phaseA --> phaseB
+phaseB --> phaseC
+phaseC --> phaseD
+m3 --> patterns
+
+note bottom of patterns
+  **8 Core Behavioral Patterns**
+  ◆ Holistic Context Gathering
+  ◆ Environment-Aware Recovery
+  ◆ Terminal-State Consistency
+  ◆ Fidelity-Verification
+end note
+
+@enduml

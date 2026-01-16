@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chat History to Decision Heuristics Pipeline</title>
+  <style>
+    :root {
+      --bg: #0d0d1a;
+      --surface: #16213e;
+      --accent: #00d9ff;
+      --accent-warm: #e94560;
+      --text: #eaeaea;
+      --text-muted: #8892b0;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      padding: 2rem;
+      max-width: 1000px;
+      margin: 0 auto;
+    }
+    h1 {
+      font-size: 2rem;
+      margin-bottom: 0.5rem;
+      background: linear-gradient(90deg, var(--accent), var(--accent-warm));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .subtitle {
+      color: var(--text-muted);
+      margin-bottom: 2rem;
+      font-size: 1.1rem;
+    }
+    .diagram {
+      background: var(--surface);
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin: 2rem 0;
+      overflow-x: auto;
+    }
+    .diagram img {
+      max-width: 100%;
+      height: auto;
+      display: block;
+      margin: 0 auto;
+    }
+    section {
+      background: var(--surface);
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin: 1.5rem 0;
+      border-left: 3px solid var(--accent);
+    }
+    section.highlight { border-left-color: var(--accent-warm); }
+    h2 {
+      font-size: 1.25rem;
+      margin-bottom: 1rem;
+      color: var(--accent);
+    }
+    section.highlight h2 { color: var(--accent-warm); }
+    ol { padding-left: 1.5rem; }
+    li { margin: 0.5rem 0; }
+    code {
+      background: rgba(0,217,255,0.1);
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      font-family: 'Fira Code', monospace;
+      font-size: 0.9rem;
+    }
+    .step-num {
+      display: inline-block;
+      width: 1.5rem;
+      height: 1.5rem;
+      background: var(--accent);
+      color: var(--bg);
+      border-radius: 50%;
+      text-align: center;
+      font-weight: bold;
+      font-size: 0.85rem;
+      line-height: 1.5rem;
+      margin-right: 0.5rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>From Chat History to Decision Heuristics</h1>
+  <p class="subtitle">Decision Context Tracing Pipeline</p>
+
+  <div class="diagram">
+    <img src="pipeline.svg" alt="Pipeline Diagram: Raw Logs → Events → Traces → Pattern Library">
+  </div>
+
+  <section>
+    <h2>How It Works</h2>
+    <ol>
+      <li><span class="step-num">1</span><strong>Event Extraction</strong> — Raw AI agent logs (JSON) are flattened into a clean event stream. Each event contains timestamp, author, and message content including tool calls and reasoning.</li>
+      <li><span class="step-num">2</span><strong>Reasoning Trace Derivation</strong> — Using DSPy + Gemini-3-Flash, we analyze events to extract the <em>why</em> behind agent decisions: patterns, reasoning logic, and outcomes.</li>
+      <li><span class="step-num">3</span><strong>Pattern Synthesis</strong> — A multi-phase recursive synthesis identifies recurring patterns across sessions and generalizes them into principles, anti-patterns, and conditional rules.</li>
+    </ol>
+  </section>
+
+  <section class="highlight">
+    <h2>The Result: Learned Pattern Library</h2>
+    <p>The final catalog isn't a true ontology for now (no class hierarchy or relationships)—it's a <strong>decision heuristics catalog</strong>, the residue of successful coordination. It captures behavioral patterns that distinguish effective agent work from failure:</p>
+    <ul style="list-style: none; padding: 0; margin-top: 1rem;">
+      <li>◆ <strong>Holistic Context Gathering</strong> — Look before leaping</li>
+      <li>◆ <strong>Environment-Aware Recovery</strong> — Fast pivoting when tools fail</li>
+      <li>◆ <strong>Terminal-State Consistency</strong> — Preventing UI/UX hangs</li>
+      <li>◆ <strong>Fidelity-Verification</strong> — Trust but verify outputs</li>
+    </ul>
+  </section>
+</body>
+</html>
