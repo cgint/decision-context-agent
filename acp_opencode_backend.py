@@ -85,7 +85,9 @@ class AutoApproveToolClient(Client):
     - streaming transcript capture via session/update
     """
 
-    def __init__(self, *, workspace_dir: Path, terminal_output_byte_limit: int = 200_000):
+    def __init__(
+        self, *, workspace_dir: Path, terminal_output_byte_limit: int = 200_000
+    ):
         self._workspace_dir = workspace_dir
         self._terminal_output_byte_limit = terminal_output_byte_limit
 
@@ -116,10 +118,16 @@ class AutoApproveToolClient(Client):
         payload_dict = _to_jsonable(payload)
         if not isinstance(payload_dict, dict):
             payload_dict = {"value": payload_dict}
-        self._transcript.append(ACPTranscriptEvent(at=self._stamp(), kind=kind, payload=payload_dict))
+        self._transcript.append(
+            ACPTranscriptEvent(at=self._stamp(), kind=kind, payload=payload_dict)
+        )
 
     async def request_permission(
-        self, options: list[PermissionOption], session_id: str, tool_call: ToolCallUpdate, **kwargs: Any
+        self,
+        options: list[PermissionOption],
+        session_id: str,
+        tool_call: ToolCallUpdate,
+        **kwargs: Any,
     ) -> RequestPermissionResponse:
         self._record(
             "session/request_permission",
@@ -130,15 +138,25 @@ class AutoApproveToolClient(Client):
             },
         )
         if options:
-            return RequestPermissionResponse(outcome=AllowedOutcome(outcome="selected", option_id=options[0].option_id))
+            return RequestPermissionResponse(
+                outcome=AllowedOutcome(
+                    outcome="selected", option_id=options[0].option_id
+                )
+            )
         return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
         self._record("session/update", {"session_id": session_id, "update": update})
 
-        if isinstance(update, AgentMessageChunk) and getattr(update.content, "type", "") == "text":
+        if (
+            isinstance(update, AgentMessageChunk)
+            and getattr(update.content, "type", "") == "text"
+        ):
             self._agent_message_parts.append(update.content.text)
-        elif isinstance(update, AgentThoughtChunk) and getattr(update.content, "type", "") == "text":
+        elif (
+            isinstance(update, AgentThoughtChunk)
+            and getattr(update.content, "type", "") == "text"
+        ):
             self._agent_thought_parts.append(update.content.text)
         elif isinstance(
             update,
@@ -160,15 +178,25 @@ class AutoApproveToolClient(Client):
             candidate = self._workspace_dir / candidate
         return candidate.resolve()
 
-    async def write_text_file(self, content: str, path: str, session_id: str, **kwargs: Any) -> WriteTextFileResponse:
+    async def write_text_file(
+        self, content: str, path: str, session_id: str, **kwargs: Any
+    ) -> WriteTextFileResponse:
         target = self._resolve_path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        self._record("fs/write_text_file", {"session_id": session_id, "path": str(target), "bytes": len(content)})
+        self._record(
+            "fs/write_text_file",
+            {"session_id": session_id, "path": str(target), "bytes": len(content)},
+        )
         return WriteTextFileResponse()
 
     async def read_text_file(
-        self, path: str, session_id: str, limit: int | None = None, line: int | None = None, **kwargs: Any
+        self,
+        path: str,
+        session_id: str,
+        limit: int | None = None,
+        line: int | None = None,
+        **kwargs: Any,
     ) -> ReadTextFileResponse:
         target = self._resolve_path(path)
         text = target.read_text(encoding="utf-8")
@@ -177,7 +205,10 @@ class AutoApproveToolClient(Client):
             text = "".join(lines[line - 1 :])
         if limit is not None and limit > 0:
             text = text[:limit]
-        self._record("fs/read_text_file", {"session_id": session_id, "path": str(target), "chars": len(text)})
+        self._record(
+            "fs/read_text_file",
+            {"session_id": session_id, "path": str(target), "chars": len(text)},
+        )
         return ReadTextFileResponse(content=text)
 
     async def create_terminal(
@@ -222,11 +253,18 @@ class AutoApproveToolClient(Client):
         asyncio.create_task(_drain())
         self._record(
             "terminal/create",
-            {"session_id": session_id, "terminal_id": terminal_id, "command": command, "args": args or []},
+            {
+                "session_id": session_id,
+                "terminal_id": terminal_id,
+                "command": command,
+                "args": args or [],
+            },
         )
         return CreateTerminalResponse(terminal_id=terminal_id)
 
-    async def terminal_output(self, session_id: str, terminal_id: str, **kwargs: Any) -> TerminalOutputResponse:
+    async def terminal_output(
+        self, session_id: str, terminal_id: str, **kwargs: Any
+    ) -> TerminalOutputResponse:
         buf = self._terminal_buffers.get(terminal_id, bytearray())
         limit = self._terminal_limits.get(terminal_id, self._terminal_output_byte_limit)
         truncated = len(buf) >= limit
@@ -240,20 +278,26 @@ class AutoApproveToolClient(Client):
             exit_status=exit_status,
         )
 
-    async def wait_for_terminal_exit(self, session_id: str, terminal_id: str, **kwargs: Any) -> WaitForTerminalExitResponse:
+    async def wait_for_terminal_exit(
+        self, session_id: str, terminal_id: str, **kwargs: Any
+    ) -> WaitForTerminalExitResponse:
         proc = self._terminal_procs.get(terminal_id)
         if not proc:
             return WaitForTerminalExitResponse(exit_code=127)
         code = await proc.wait()
         return WaitForTerminalExitResponse(exit_code=code)
 
-    async def kill_terminal(self, session_id: str, terminal_id: str, **kwargs: Any) -> KillTerminalCommandResponse:
+    async def kill_terminal(
+        self, session_id: str, terminal_id: str, **kwargs: Any
+    ) -> KillTerminalCommandResponse:
         proc = self._terminal_procs.get(terminal_id)
         if proc and proc.returncode is None:
             proc.terminate()
         return KillTerminalCommandResponse()
 
-    async def release_terminal(self, session_id: str, terminal_id: str, **kwargs: Any) -> ReleaseTerminalResponse:
+    async def release_terminal(
+        self, session_id: str, terminal_id: str, **kwargs: Any
+    ) -> ReleaseTerminalResponse:
         self._terminal_procs.pop(terminal_id, None)
         self._terminal_buffers.pop(terminal_id, None)
         self._terminal_limits.pop(terminal_id, None)
@@ -302,6 +346,7 @@ class OpencodeACPBackend:
             self._log_level,
             limit=ACP_STDIO_LIMIT_BYTES,
         ) as (stdout_reader, stdin_writer, proc):
+
             async def _drain_stderr() -> None:
                 if proc.stderr is None:
                     return
@@ -309,7 +354,9 @@ class OpencodeACPBackend:
                     chunk = await proc.stderr.read(4096)
                     if not chunk:
                         break
-                    opencode_stderr_parts.append(chunk.decode("utf-8", errors="replace"))
+                    opencode_stderr_parts.append(
+                        chunk.decode("utf-8", errors="replace")
+                    )
 
             stderr_task = asyncio.create_task(_drain_stderr())
 
@@ -318,10 +365,14 @@ class OpencodeACPBackend:
                 conn.initialize(
                     protocol_version=1,
                     client_capabilities=ClientCapabilities(
-                        fs=FileSystemCapability(read_text_file=True, write_text_file=True),
+                        fs=FileSystemCapability(
+                            read_text_file=True, write_text_file=True
+                        ),
                         terminal=True,
                     ),
-                    client_info=Implementation(name="decision-context-tracing", version="0.1.0"),
+                    client_info=Implementation(
+                        name="decision-context-tracing", version="0.1.0"
+                    ),
                 ),
                 timeout=self._initialize_timeout_s,
             )
@@ -337,6 +388,10 @@ class OpencodeACPBackend:
                     text=(
                         f"{assignment_text.rstrip()}\n\n"
                         "IMPORTANT: Respond in the Manager↔Actor Result format from MANAGER_ACTOR_INTERFACE.md.\n"
+                        "OUTPUT_FORMAT: Respond ONLY with these headers (exact):\n"
+                        "RESULT: <success|partial|fail>\n"
+                        "EVIDENCE: <file path with line numbers or command output>\n"
+                        "STATE_DELTA: <one bullet>\n"
                         f"ASSIGNMENT_ID: {assignment_id}\n"
                     ),
                 )
@@ -358,14 +413,18 @@ class OpencodeACPBackend:
                             opencode_stderr="".join(opencode_stderr_parts).strip(),
                         )
                         try:
-                            await asyncio.wait_for(progress_stop.wait(), timeout=progress_interval_s)
+                            await asyncio.wait_for(
+                                progress_stop.wait(), timeout=progress_interval_s
+                            )
                         except asyncio.TimeoutError:
                             continue
 
                 progress_task = asyncio.create_task(_progress_loop())
 
             try:
-                prompt_response = await asyncio.wait_for(_do_prompt(), timeout=self._prompt_timeout_s)
+                prompt_response = await asyncio.wait_for(
+                    _do_prompt(), timeout=self._prompt_timeout_s
+                )
             except asyncio.TimeoutError:
                 prompt_response = PromptResponse(stop_reason="max_tokens")
             finally:
@@ -397,22 +456,40 @@ class OpencodeACPBackend:
         opencode_stderr: str,
     ) -> None:
         result_dir.mkdir(parents=True, exist_ok=True)
-        (result_dir / "agent_message.partial.txt").write_text(agent_message + "\n", encoding="utf-8")
-        (result_dir / "agent_thought.partial.txt").write_text(agent_thought + "\n", encoding="utf-8")
-        (result_dir / "opencode_stderr.partial.txt").write_text(opencode_stderr + "\n", encoding="utf-8")
+        (result_dir / "agent_message.partial.txt").write_text(
+            agent_message + "\n", encoding="utf-8"
+        )
+        (result_dir / "agent_thought.partial.txt").write_text(
+            agent_thought + "\n", encoding="utf-8"
+        )
+        (result_dir / "opencode_stderr.partial.txt").write_text(
+            opencode_stderr + "\n", encoding="utf-8"
+        )
         (result_dir / "acp_transcript.partial.json").write_text(
-            json.dumps([e.__dict__ for e in transcript], indent=2, sort_keys=True) + "\n",
+            json.dumps([e.__dict__ for e in transcript], indent=2, sort_keys=True)
+            + "\n",
             encoding="utf-8",
         )
 
     @staticmethod
     def persist_result(result_dir: Path, result: ACPPromptResult) -> None:
         result_dir.mkdir(parents=True, exist_ok=True)
-        (result_dir / "agent_message.txt").write_text(result.agent_message + "\n", encoding="utf-8")
-        (result_dir / "agent_thought.txt").write_text(result.agent_thought + "\n", encoding="utf-8")
-        (result_dir / "stop_reason.txt").write_text(result.stop_reason + "\n", encoding="utf-8")
-        (result_dir / "opencode_stderr.txt").write_text(result.opencode_stderr + "\n", encoding="utf-8")
+        (result_dir / "agent_message.txt").write_text(
+            result.agent_message + "\n", encoding="utf-8"
+        )
+        (result_dir / "agent_thought.txt").write_text(
+            result.agent_thought + "\n", encoding="utf-8"
+        )
+        (result_dir / "stop_reason.txt").write_text(
+            result.stop_reason + "\n", encoding="utf-8"
+        )
+        (result_dir / "opencode_stderr.txt").write_text(
+            result.opencode_stderr + "\n", encoding="utf-8"
+        )
         (result_dir / "acp_transcript.json").write_text(
-            json.dumps([e.__dict__ for e in result.transcript], indent=2, sort_keys=True) + "\n",
+            json.dumps(
+                [e.__dict__ for e in result.transcript], indent=2, sort_keys=True
+            )
+            + "\n",
             encoding="utf-8",
         )

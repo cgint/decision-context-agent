@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import argparse
 import asyncio
+import importlib
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT))
 
 DEFAULT_ASSIGNMENT = """ASSIGNMENT_ID: ACP-PROBE-001
 TASK: Confirm ACP connectivity by reading the first 5 lines of README.md.
@@ -16,12 +18,24 @@ OVERALL_GOAL: ACP connectivity probe.
 CONSTRAINTS: Use a read-only command.
 DEGREES_OF_FREEDOM: Action-specified
 DELIVERABLES: RESULT/EVIDENCE/STATE_DELTA with a tool-backed citation.
+OUTPUT_FORMAT: Respond ONLY with these headers (exact):
+RESULT: <success|partial|fail>
+EVIDENCE: <file path with line numbers or command output>
+STATE_DELTA: <one bullet>
 """
 
 
+def _resolve_repo_import(module_name: str):
+    sys.path.insert(0, str(REPO_ROOT))
+    return importlib.import_module(module_name)
+
+
 async def _run(args: argparse.Namespace) -> int:
+    acp_module = _resolve_repo_import("acp_opencode_backend")
+    protocol_module = _resolve_repo_import("manager_actor_protocol")
+
     workspace_dir = Path(args.workspace_dir).resolve()
-    backend = OpencodeACPBackend(
+    backend = acp_module.OpencodeACPBackend(
         workspace_dir=workspace_dir,
         opencode_bin=args.opencode_bin,
         log_level=args.log_level,
@@ -35,7 +49,7 @@ async def _run(args: argparse.Namespace) -> int:
     )
     print(result.agent_message)
 
-    parsed = parse_result(
+    parsed = protocol_module.parse_result(
         result.agent_message, fallback_assignment_id=args.assignment_id
     )
     if parsed.errors:

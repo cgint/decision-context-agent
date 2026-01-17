@@ -39,4 +39,4 @@ Build a long-horizon **Manager** that delegates atomic subtasks to an executing 
 
 # Verification run
 
-- LSP diagnostics: online_replay_loop.py (clean), manager_actor_protocol.py (clean), run_swebench_eval.py (clean), scripts/acp_probe.py (clean). Markdown LSP unavailable.
+- LSP diagnostics: acp_opencode_backend.py (clean), online_replay_loop.py (clean), manager_actor_protocol.py (clean), run_swebench_eval.py (clean), scripts/acp_probe.py (clean). Markdown LSP unavailable.
