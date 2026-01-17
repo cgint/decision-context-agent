@@ -41,7 +41,7 @@ The **ACP (Agent Client Protocol)** serves as the formal boundary between the **
 ## Integration Strategy: "The ACP Bridge"
 
 A recurring question is whether to integrate Pi Mono into our implementation or vice-versa. 
-
+ 
 ### My Analysis & Recommendation
 We should adopt an **ACP-First Integration Strategy**.
 
@@ -63,3 +63,25 @@ We should adopt an **ACP-First Integration Strategy**.
 4.  **SWE-bench Injection:** Update `run_swebench_eval.py` to support the `--actor opencode-acp` flag, ensuring it passes the instance-specific workspace to the Manager.
 
 By treating the supervisor as an **Orchestrator** at the ACP boundary, we gain the safety and alignment we want without the friction of micromanagement, while maintaining full compatibility with benchmarking suites like SWE-bench Lite.
+
+---
+
+## Pi Mono Hook Points: Skills vs. Extensions
+
+Pi Mono has two customization mechanisms that often get conflated:
+
+### Skills (on-demand capability packages)
+Skills are **self-contained instruction/workflow bundles** (`SKILL.md` + optional scripts/docs) that the agent loads on-demand when it decides the task matches the skill description (or when explicitly invoked via `/skill:name`). Skills are best for “how to do X” guidance and helper scripts, not for system-level interception.
+
+### Extensions (actual interception + instrumentation)
+Extensions are **TypeScript modules** that can register tools/commands and subscribe to lifecycle events (e.g., `tool_call`, `tool_result`, `turn_end`, compaction events). This is the real “hook yourself into the agent runtime” surface:
+- **Observe**: emit structured telemetry for tool calls/results and message deltas.
+- **Modify/block**: enforce minimal safety policy (sparingly; avoid recreating micromanagement).
+- **Augment**: add custom tools/commands to support tracing/export flows.
+
+### Programmatic embedding (for Manager/Actor integration)
+Pi Mono also supports **SDK embedding** (Node/TypeScript) and **RPC mode** for process-isolated, headless integration. This can be an alternative to ACP if ACP transport/servers are a bottleneck.
+
+### How this maps to our architecture
+- Keep Decision Context Agent as the **Manager** (supervision, traces, pattern synthesis).
+- Use Pi Mono as the **Actor**, and (optionally) add a small **Extension** focused on observability/telemetry so the Manager can capture tool-backed evidence without pushing supervision down into per-tool gatekeeping.
