@@ -34,7 +34,44 @@ RESULT_HEADER_ORDER = [
 
 _RESULT_HEADER_KEYS = set(RESULT_HEADER_ORDER)
 _HEADER_PATTERN = re.compile(r"^([A-Z_]+):\s*(.*)$")
+_HEADER_MD_PATTERN = re.compile(r"^#{1,6}\s+([A-Z_]+)\s*$")
 _VALID_RESULTS = {"success", "partial", "fail"}
+
+
+def _parse_markdown_blocks(lines: List[str]) -> Dict[str, str]:
+    blocks: Dict[str, str] = {}
+    current_key: str | None = None
+    for line in lines:
+        header_match = _HEADER_MD_PATTERN.match(line.strip())
+        if header_match:
+            key = header_match.group(1)
+            if key in _RESULT_HEADER_KEYS:
+                current_key = key
+                if key not in blocks:
+                    blocks[key] = ""
+                continue
+            current_key = None
+        if current_key:
+            value = line.rstrip()
+            if value:
+                blocks[current_key] = (blocks[current_key] + "\n" + value).strip()
+    return blocks
+
+
+def _extract_evidence_from_text(text: str) -> str:
+    if not text:
+        return ""
+    evidence_lines: List[str] = []
+    path_re = re.compile(r"([\w./-]+\.[\w]+(?::\d+(?:-\d+)?)?)")
+    for line in text.splitlines():
+        value = line.strip()
+        if not value:
+            continue
+        if path_re.search(value) or "`" in value:
+            evidence_lines.append(value)
+        if len(evidence_lines) >= 3:
+            break
+    return "\n".join(evidence_lines).strip()
 
 
 def _maybe_line(key: str, value: str) -> str:
@@ -119,10 +156,17 @@ def parse_result(text: str, fallback_assignment_id: str = "") -> ParsedResult:
             if current_key:
                 continuation = line.rstrip()
                 if continuation:
-                    fields[current_key] = (fields[current_key] + "\n" + continuation).strip()
+                    fields[current_key] = (
+                        fields[current_key] + "\n" + continuation
+                    ).strip()
                 continue
             in_headers = False
         body_lines.append(line)
+
+    if "RESULT" not in fields:
+        md_blocks = _parse_markdown_blocks(lines)
+        for key, value in md_blocks.items():
+            fields.setdefault(key, value)
 
     assignment_id = fields.get("ASSIGNMENT_ID", "").strip() or fallback_assignment_id
     result_value = (fields.get("RESULT", "") or "").strip()
@@ -130,17 +174,22 @@ def parse_result(text: str, fallback_assignment_id: str = "") -> ParsedResult:
     if normalized_result in _VALID_RESULTS:
         result_value = normalized_result
 
+    evidence_value = (fields.get("EVIDENCE", "") or "").strip()
+    body_text = "\n".join(body_lines).strip()
+    if not evidence_value:
+        evidence_value = _extract_evidence_from_text(body_text)
+
     parsed = Result(
         assignment_id=assignment_id,
         result=result_value,
-        evidence=(fields.get("EVIDENCE", "") or "").strip(),
+        evidence=evidence_value,
         state_delta=(fields.get("STATE_DELTA", "") or "").strip(),
         changes=(fields.get("CHANGES", "") or "").strip(),
         artifacts=(fields.get("ARTIFACTS", "") or "").strip(),
         risks=(fields.get("RISKS", "") or "").strip(),
         open_questions=(fields.get("OPEN_QUESTIONS", "") or "").strip(),
         next_options=(fields.get("NEXT_OPTIONS", "") or "").strip(),
-        body="\n".join(body_lines).strip(),
+        body=body_text,
     )
 
     errors: List[str] = []
@@ -152,6 +201,8 @@ def parse_result(text: str, fallback_assignment_id: str = "") -> ParsedResult:
         errors.append("missing EVIDENCE")
     if not parsed.state_delta:
         errors.append("missing STATE_DELTA")
+    if parsed.result and parsed.result not in _VALID_RESULTS:
+        errors.append("invalid RESULT (expected success/partial/fail)")
 
     return ParsedResult(result=parsed, errors=errors, raw_fields=fields)
 

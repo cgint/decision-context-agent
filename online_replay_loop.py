@@ -61,7 +61,7 @@ DEFAULT_PHASE = "analysis"
 DEFAULT_INTERACTION_MODE = "human"
 DEFAULT_MAX_HISTORY_EVENTS = 30
 DEFAULT_MAX_PINNED_FINDINGS = 10
-DEFAULT_ACTOR_MODE = "bash"
+DEFAULT_ACTOR_MODE = "opencode-acp"
 DEFAULT_DEGREES_OF_FREEDOM = "Outcome-only freedom"
 DEFAULT_RULES_PATH = "STEP_BY_STEP_REASON_RULES.md"
 
@@ -80,10 +80,13 @@ PHASE_TO_RULES: Dict[str, str] = {
 
 ASSIGNMENT_RULES = """Rules for composing a Manager->Actor Assignment:
 - Task-level only; do not prescribe commands or tool steps.
+- Prefer atomic, tool-backed tasks (one observable outcome).
 - Provide the minimum context needed (evidence anchors only).
 - Constraints only when they materially affect success.
 - Degrees of freedom must be one of: Outcome-only freedom, Action-envelope, Action-specified.
-- Deliverables should request Result headers: RESULT, EVIDENCE, STATE_DELTA (others optional).
+- Deliverables must include RESULT, EVIDENCE, STATE_DELTA (others optional).
+- EVIDENCE must cite at least one concrete tool output (file path + line numbers or command output snippet).
+- If evidence cannot be produced, RESULT must be fail with a clear reason.
 """
 
 
@@ -581,49 +584,6 @@ def extract_file_path_from_command(command: str) -> str:
     return ""
 
 
-_PY_WRITE_RE = re.compile(
-    r"(?s)(\bopen\s*\(.*?,\s*['\"](?:w|a|w\+|a\+)['\"])|(\bwrite_text\s*\()|(\bwrite_bytes\s*\()"
-)
-
-
-def python_edit_preflight(*, code: str, command_intent: str) -> tuple[bool, str]:
-    """
-    Deterministically validate python_edit commands so the agent treats python_edit as
-    a file-editing DSL (not a scratchpad).
-    """
-    code = code or ""
-    intent = (command_intent or "").strip().lower()
-
-    if not RLM_POT_AVAILABLE or PythonExecutor is None:
-        return False, "python_edit is unavailable (rlm_pot not installed)"
-
-    allowed = getattr(PythonExecutor, "DEFAULT_ALLOWED_IMPORTS", set()) or set()
-
-    modules = extract_python_modules(code, max_modules=50)
-    disallowed: list[str] = []
-    for mod in modules:
-        base = mod.split(".")[0]
-        if base in allowed or mod in allowed:
-            continue
-        disallowed.append(mod)
-
-    if disallowed:
-        allowed_list = ", ".join(sorted(allowed)) if allowed else "<unknown>"
-        return (
-            False,
-            f"disallowed imports: {', '.join(sorted(set(disallowed)))}; allowed: {allowed_list}. "
-            "python_edit must not import repo/third-party code; use open()/write to edit files.",
-        )
-
-    if intent == "edit" and not _PY_WRITE_RE.search(code):
-        return (
-            False,
-            "edit intent requires a file write (e.g. open(path,'w').write(new_content) or Path(...).write_text(...))",
-        )
-
-    return True, ""
-
-
 def is_simple_inplace_sed(command: str) -> bool:
     """
     Allow only very simple in-place sed substitutions:
@@ -747,159 +707,6 @@ def goal_explicitly_allows_delete(goal: str) -> bool:
     )
 
 
-def _shell_quote_single(text: str) -> str:
-    """Safely single-quote a string for `bash -lc`."""
-    value = str(text or "")
-    return "'" + value.replace("'", "'\"'\"'") + "'"
-
-
-def _safe_parse_edit_command(command: str) -> Optional[Dict[str, str]]:
-    """
-    Parse an `edit` action's JSON command string.
-    Expected keys: path, old_text, new_text.
-    """
-    raw = (command or "").strip()
-    if not raw:
-        return None
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(value, dict):
-        return None
-    path = value.get("path")
-    old_text = value.get("old_text")
-    new_text = value.get("new_text")
-    if not isinstance(path, str) or not isinstance(old_text, str) or not isinstance(new_text, str):
-        return None
-    return {"path": path, "old_text": old_text, "new_text": new_text}
-
-
-def _extract_first_nonempty_line(text: str, *, max_len: int = 200) -> str:
-    for line in (text or "").splitlines():
-        s = line.strip()
-        if s:
-            return s[:max_len]
-    return ""
-
-
-def _extract_search_needles(old_text: str, *, max_needles: int = 3, max_len: int = 200) -> list[str]:
-    """
-    Extract a few high-signal, likely-to-exist search needles from an `old_text` edit snippet.
-
-    Goal: avoid forcing a locate/read step that searches for a missing/guessed line
-    (e.g., a fabricated `if ...:`) and instead prefer stable identifiers like function names.
-    """
-    text = str(old_text or "")
-    if not text.strip():
-        return []
-
-    stopwords = {
-        # Python keywords / common noise
-        "if",
-        "elif",
-        "else",
-        "for",
-        "while",
-        "try",
-        "except",
-        "with",
-        "return",
-        "pass",
-        "break",
-        "continue",
-        "true",
-        "false",
-        "none",
-        "and",
-        "or",
-        "not",
-        "in",
-        "is",
-        # Generic identifiers (low discriminative power)
-        "self",
-        "cls",
-        "args",
-        "kwargs",
-        "model",
-        "left",
-        "right",
-    }
-
-    needles: list[str] = []
-
-    # Prefer function names if present.
-    m = re.search(r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", text, flags=re.M)
-    if m:
-        fn = m.group(1)
-        needles.append(f"def {fn}")
-        needles.append(f"{fn}(")
-
-    # Extract and rank identifier-like tokens.
-    tokens = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b", text)
-    counts: dict[str, int] = {}
-    for tok in tokens:
-        low = tok.lower()
-        if low in stopwords:
-            continue
-        counts[tok] = counts.get(tok, 0) + 1
-
-    def _score(tok: str) -> tuple[int, int, int]:
-        # Prefer underscore/CamelCase-ish tokens that tend to be stable identifiers.
-        score = 0
-        if tok.startswith("_"):
-            score += 2
-        if "_" in tok:
-            score += 4
-        if tok[:1].isupper():
-            score += 3
-        score += min(len(tok), 24) // 4
-        return (score, counts.get(tok, 0), len(tok))
-
-    for tok, _ in sorted(counts.items(), key=lambda kv: _score(kv[0]), reverse=True):
-        if tok not in needles:
-            needles.append(tok)
-        if len(needles) >= max_needles:
-            break
-
-    # As a last resort, add the first non-empty line if it looks like a statement, not a control-flow header.
-    first_line = _extract_first_nonempty_line(text, max_len=max_len)
-    if first_line and len(needles) < max_needles:
-        if not re.match(r"^(if|elif|else|for|while|try|except|with)\b", first_line.strip()):
-            if first_line not in needles:
-                needles.append(first_line)
-
-    # Deduplicate + trim.
-    out: list[str] = []
-    for n in needles:
-        s = (n or "").strip()
-        if not s:
-            continue
-        s = s[:max_len]
-        if s not in out:
-            out.append(s)
-        if len(out) >= max_needles:
-            break
-    return out
-
-
-def _recent_old_text_not_found_failures(history_events_json: str, *, window: int = 10) -> int:
-    """Count recent failures that look like 'old_text not found' for surgical edits."""
-    events = safe_parse_history_events(history_events_json)
-    count = 0
-    for ev in events[-window:]:
-        if not isinstance(ev, dict):
-            continue
-        if ev.get("action_type") != "edit":
-            continue
-        if ev.get("ok") is True:
-            continue
-        excerpt = str(ev.get("error_excerpt", "") or "").lower()
-        if "old_text" in excerpt and ("not found" in excerpt or "could not find" in excerpt):
-            count += 1
-    return count
-
-
 def apply_command_policy(
     *,
     step: int,
@@ -981,56 +788,6 @@ def apply_command_policy(
             success_criteria or "Evidence collected to choose a safe next step."
         )
 
-    # Loop breaker: if surgical edits repeatedly fail due to old_text not found,
-    # force a read/locate step instead of allowing more guessed replacements.
-    if action_type == "edit" and command_intent == "edit":
-        old_text_failures = _recent_old_text_not_found_failures(history_events_json)
-        if old_text_failures >= 2:
-            edit_params = _safe_parse_edit_command(command)
-            if edit_params and edit_params.get("path"):
-                path = edit_params["path"]
-                needles = _extract_search_needles(edit_params.get("old_text", ""))
-                if needles:
-                    patterns = " ".join(f"-e {_shell_quote_single(n)}" for n in needles)
-                    locate_cmd = f"rg -n -C 3 --fixed-strings {patterns} {_shell_quote_single(path)} | head -n 120"
-                else:
-                    locate_cmd = f"sed -n '1,200p' {_shell_quote_single(path)}"
-                rewrites.append(
-                    {
-                        "kind": "loop_breaker_old_text_not_found",
-                        "reason": "repeated surgical edit failures (old_text not found); force a locate/read step to prevent guess-and-retry loops",
-                        "original_action_type": "edit",
-                        "final_action_type": "shell_command",
-                        "original_command": command,
-                        "final_command": locate_cmd,
-                    }
-                )
-                action_type = "shell_command"
-                command_intent = "read"
-                command = locate_cmd
-                task = f"Locate the exact text to edit in {path} (with line numbers/context)."
-                success_criteria = (
-                    "Matching lines are printed with line numbers and nearby context; "
-                    "use that exact text as old_text for a surgical edit."
-                )
-
-    # Guardrail: block complex `sed -i` (high failure rate due to escaping / silent no-ops).
-    if action_type == "shell_command" and "sed -i" in (command or "").lower():
-        if not is_simple_inplace_sed(command):
-            blocked = (
-                "echo \"Blocked: complex 'sed -i' command. "
-                'Use python_edit with open()/write for multi-line or complex edits."; exit 1'
-            )
-            rewrites.append(
-                {
-                    "kind": "blocked_complex_sed_inplace",
-                    "reason": "complex sed -i is error-prone; prefer python_edit file I/O edits",
-                    "original_command": command,
-                    "final_command": blocked,
-                }
-            )
-            command = blocked
-
     return {
         "task": task,
         "success_criteria": success_criteria,
@@ -1077,33 +834,24 @@ def looks_like_write_command(command: str) -> bool:
     return any(marker in lowered for marker in write_markers)
 
 
-def _detect_hallucination_patterns(text: str) -> list[str]:
-    """Detect patterns that suggest the agent guessed/hallucinated code structure."""
-    issues = []
-    if "..." in text and text.count("...") >= 2:
-        issues.append("Multiple '...' ellipsis found (likely guessed code)")
-    if "# ..." in text or "// ..." in text:
-        issues.append("Comment ellipsis found (likely placeholder)")
-    if re.search(r"\.\.\.\s*$", text, re.MULTILINE):
-        issues.append("Line ending with '...' (truncation artifact)")
-    return issues
-
-
 def perform_surgical_edit(path: Path, old_text: str, new_text: str) -> dict:
     if not path.exists():
         return {"success": False, "error": f"File not found: {path}"}
 
-    hallucination_issues = _detect_hallucination_patterns(old_text)
-    if hallucination_issues:
-        return {
-            "success": False,
-            "error": (
-                f"REJECTED: old_text appears to contain guessed/hallucinated code. "
-                f"Issues: {'; '.join(hallucination_issues)}. "
-                f"ACTION REQUIRED: Re-read the actual file content with "
-                f"`sed -n 'START,ENDp' {path}` before attempting to edit."
-            ),
-        }
+    content = path.read_text(encoding="utf-8")
+
+    if content.count(old_text) == 1:
+        new_content = content.replace(old_text, new_text)
+        path.write_text(new_content, encoding="utf-8")
+        return {"success": True, "method": "exact_match"}
+
+    return {
+        "success": False,
+        "error": (
+            "Could not find old_text in file. "
+            "Ensure old_text matches the file content exactly."
+        ),
+    }
 
     content = path.read_text(encoding="utf-8")
     total_lines = content.count("\n") + 1
@@ -1788,17 +1536,28 @@ def main() -> None:
                 "DELIVERABLES": getattr(out, "deliverables", ""),
             }, out
 
-        with ThreadPoolExecutor(max_workers=2) as pool:
+        with ThreadPoolExecutor(max_workers=3) as pool:
             future_decision = pool.submit(run_decision_planner)
-            if args.actor == "opencode-acp":
-                future_action = pool.submit(run_assignment_composer)
-            else:
-                future_action = pool.submit(run_action_selector)
+            future_assignment = pool.submit(run_assignment_composer)
+            future_action = (
+                pool.submit(run_action_selector)
+                if args.actor != "opencode-acp"
+                else None
+            )
             composed = {}
             decision_dict, decision_out = future_decision.result()
-            action_dict, action_out = future_action.result()
+            assignment_dict, assignment_out = future_assignment.result()
+            action_dict: dict = {}
+            action_out = None
+            if future_action is not None:
+                action_dict, action_out = future_action.result()
+                composed.update(action_dict)
             composed.update(decision_dict)
-            composed.update(action_dict)
+            composed.update(assignment_dict)
+            if future_action is not None:
+                composed["action_type"] = action_dict.get("action_type", "")
+                composed["command"] = action_dict.get("command", "")
+                composed["command_intent"] = action_dict.get("command_intent", "")
 
             record_lm_usage(step, step_dir, "decision_planner", decision_out)
             in_tokens, out_tokens = extract_token_usage(decision_out)
@@ -1807,46 +1566,20 @@ def main() -> None:
             step_input_tokens += in_tokens
             step_output_tokens += out_tokens
 
-            # Either action selector (bash/python) or assignment composer (delegate).
-            if args.actor == "opencode-acp":
-                record_lm_usage(step, step_dir, "assignment_composer", action_out)
-            else:
-                record_lm_usage(step, step_dir, "action_selector", action_out)
-            in_tokens, out_tokens = extract_token_usage(action_out)
+            record_lm_usage(step, step_dir, "assignment_composer", assignment_out)
+            in_tokens, out_tokens = extract_token_usage(assignment_out)
             total_input_tokens += in_tokens
             total_output_tokens += out_tokens
             step_input_tokens += in_tokens
             step_output_tokens += out_tokens
 
-        # Deterministic python_edit preflight + single in-step retry.
-        if args.actor != "opencode-acp":
-            raw_action_type = composed.get("action_type", "")
-            action_type_tmp = normalize_action_type(raw_action_type)
-            if action_type_tmp == "python_edit":
-                ok, reason = python_edit_preflight(
-                    code=composed.get("command", "") or "",
-                    command_intent=composed.get("command_intent", "") or "",
-                )
-                if not ok:
-                    note = (
-                        "python_edit rejected by preflight: "
-                        f"{reason}\n"
-                        "Choose a new action. If using python_edit for edits: read file with open(), "
-                        "build new_content, write back with open(...,'w')."
-                    )
-                    write_text(
-                        step_dir / "python_edit_preflight_failure.txt", note + "\n"
-                    )
-                    retry_dict, retry_out = run_action_selector_with_observation(
-                        observation + "\n\n" + note
-                    )
-                    record_lm_usage(step, step_dir, "action_selector_retry", retry_out)
-                    in_tokens, out_tokens = extract_token_usage(retry_out)
-                    total_input_tokens += in_tokens
-                    total_output_tokens += out_tokens
-                    step_input_tokens += in_tokens
-                    step_output_tokens += out_tokens
-                    composed.update(retry_dict)
+            if future_action is not None and action_out is not None:
+                record_lm_usage(step, step_dir, "action_selector", action_out)
+                in_tokens, out_tokens = extract_token_usage(action_out)
+                total_input_tokens += in_tokens
+                total_output_tokens += out_tokens
+                step_input_tokens += in_tokens
+                step_output_tokens += out_tokens
 
         write_json(
             step_dir / "decision_planner_output.json",
@@ -1993,6 +1726,24 @@ def main() -> None:
             if not observation:
                 observation = truncate_text(result.agent_message, limit=1200).strip()
             write_text(step_dir / "observation_summary.txt", observation)
+
+            evidence_text = parsed.result.evidence or ""
+            evidence_has_path = bool(
+                re.search(r"\S+\.\w+(:\d+(-\d+)?)?", evidence_text)
+            )
+            evidence_has_cmd = bool(re.search(r"`.+`", evidence_text))
+            evidence_ok = evidence_has_path or evidence_has_cmd
+            if parsed.errors or not evidence_ok:
+                issues = []
+                if parsed.errors:
+                    issues.extend(parsed.errors)
+                if not evidence_ok:
+                    issues.append("missing evidence with file+line or command snippet")
+                observation = (
+                    observation
+                    + "\n\nEVIDENCE_REQUIRED: Provide RESULT/EVIDENCE/STATE_DELTA with a tool-backed citation (file path + line numbers or command output snippet)."
+                )
+                write_text(step_dir / "result_parse_errors.txt", "\n".join(issues))
 
             new_step_json = json.dumps(
                 {
