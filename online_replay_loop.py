@@ -16,9 +16,10 @@ import json
 import os
 import re
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -1333,17 +1334,27 @@ def main() -> None:
             return {}
 
     def record_lm_usage(
-        step: int, step_dir: Path, call_name: str, prediction_result: Any
+        step: int,
+        step_dir: Path,
+        call_name: str,
+        prediction_result: Any,
+        timing: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
         Persist the full raw usage dict "as-is" (best-effort) both:
         - per-step file: steps/step_XXX/lm_usage_{call_name}.json
-        - run-level append-only log: lm_usage_events.jsonl
+        - run-level append-only log: lm_usage_events.jsonl (includes timing)
         """
         usage = safe_get_lm_usage(prediction_result)
         write_json(step_dir / f"lm_usage_{call_name}.json", usage)
         append_jsonl(
-            lm_usage_events_path, {"step": step, "call": call_name, "usage": usage}
+            lm_usage_events_path,
+            {
+                "step": step,
+                "call": call_name,
+                "timing": timing or {},
+                "usage": usage,
+            },
         )
         return usage
 
@@ -1368,13 +1379,28 @@ def main() -> None:
         except Exception:
             return 0, 0
 
-    def robust_predict(predictor, **kwargs) -> Any:
+    def robust_predict(predictor, **kwargs) -> tuple[Any, dict[str, Any]]:
         max_retries = 2
+        started_at = datetime.now(timezone.utc).isoformat()
+        start_perf = time.perf_counter()
+        last_error: Exception | None = None
         for attempt in range(max_retries + 1):
             try:
                 with dspy.context(lm=lm, adapter=adapter, track_usage=True):
-                    return predictor(**kwargs)
+                    prediction = predictor(**kwargs)
+                ended_at = datetime.now(timezone.utc).isoformat()
+                duration_ms = int((time.perf_counter() - start_perf) * 1000)
+                timing: dict[str, Any] = {
+                    "started_at": started_at,
+                    "ended_at": ended_at,
+                    "duration_ms": duration_ms,
+                    "attempts": attempt + 1,
+                }
+                if last_error is not None:
+                    timing["last_error"] = str(last_error)
+                return prediction, timing
             except Exception as e:
+                last_error = e
                 if attempt < max_retries:
                     if "observation" in kwargs:
                         kwargs["observation"] = (
@@ -1414,8 +1440,12 @@ def main() -> None:
             "interaction_mode": args.interaction_mode,
         }
         write_json(step_dir / "consolidator_input.json", consolidator_input)
-        consolidator_out = robust_predict(consolidator, **consolidator_input)
-        record_lm_usage(step, step_dir, "consolidator", consolidator_out)
+        consolidator_out, consolidator_timing = robust_predict(
+            consolidator, **consolidator_input
+        )
+        record_lm_usage(
+            step, step_dir, "consolidator", consolidator_out, consolidator_timing
+        )
         in_tokens, out_tokens = extract_token_usage(consolidator_out)
         total_input_tokens += in_tokens
         total_output_tokens += out_tokens
@@ -1453,8 +1483,8 @@ def main() -> None:
 
         state = consolidated.get("STATE", state).strip()
 
-        def run_decision_planner() -> tuple[Dict[str, str], Any]:
-            out = robust_predict(
+        def run_decision_planner() -> tuple[Dict[str, str], Any, dict[str, Any]]:
+            out, timing = robust_predict(
                 decision_planner,
                 goal=args.user_request,
                 observation=observation,
@@ -1468,10 +1498,10 @@ def main() -> None:
             return {
                 "PLAN_HINT": getattr(out, "plan_hint", ""),
                 "DECISION": getattr(out, "decision", ""),
-            }, out
+            }, out, timing
 
-        def run_action_selector() -> tuple[Dict[str, str], Any]:
-            out = robust_predict(
+        def run_action_selector() -> tuple[Dict[str, str], Any, dict[str, Any]]:
+            out, timing = robust_predict(
                 action_selector,
                 goal=args.user_request,
                 observation=observation,
@@ -1488,12 +1518,12 @@ def main() -> None:
                 "SUCCESS_CRITERIA": getattr(out, "success_criteria", ""),
                 "command": getattr(out, "command", ""),
                 "command_intent": getattr(out, "command_intent", ""),
-            }, out
+            }, out, timing
 
         def run_action_selector_with_observation(
             obs: str,
-        ) -> tuple[Dict[str, str], Any]:
-            out = robust_predict(
+        ) -> tuple[Dict[str, str], Any, dict[str, Any]]:
+            out, timing = robust_predict(
                 action_selector,
                 goal=args.user_request,
                 observation=obs,
@@ -1510,10 +1540,10 @@ def main() -> None:
                 "SUCCESS_CRITERIA": getattr(out, "success_criteria", ""),
                 "command": getattr(out, "command", ""),
                 "command_intent": getattr(out, "command_intent", ""),
-            }, out
+            }, out, timing
 
-        def run_assignment_composer() -> tuple[Dict[str, str], Any]:
-            out = robust_predict(
+        def run_assignment_composer() -> tuple[Dict[str, str], Any, dict[str, Any]]:
+            out, timing = robust_predict(
                 assignment_composer,
                 goal=args.user_request,
                 observation=observation,
@@ -1534,7 +1564,7 @@ def main() -> None:
                 "CONSTRAINTS": getattr(out, "constraints", ""),
                 "DEGREES_OF_FREEDOM": getattr(out, "degrees_of_freedom", ""),
                 "DELIVERABLES": getattr(out, "deliverables", ""),
-            }, out
+            }, out, timing
 
         with ThreadPoolExecutor(max_workers=3) as pool:
             future_decision = pool.submit(run_decision_planner)
@@ -1545,12 +1575,15 @@ def main() -> None:
                 else None
             )
             composed = {}
-            decision_dict, decision_out = future_decision.result()
-            assignment_dict, assignment_out = future_assignment.result()
+            decision_dict, decision_out, decision_timing = future_decision.result()
+            assignment_dict, assignment_out, assignment_timing = (
+                future_assignment.result()
+            )
             action_dict: dict = {}
             action_out = None
+            action_timing: dict[str, Any] | None = None
             if future_action is not None:
-                action_dict, action_out = future_action.result()
+                action_dict, action_out, action_timing = future_action.result()
                 composed.update(action_dict)
             composed.update(decision_dict)
             composed.update(assignment_dict)
@@ -1559,14 +1592,22 @@ def main() -> None:
                 composed["command"] = action_dict.get("command", "")
                 composed["command_intent"] = action_dict.get("command_intent", "")
 
-            record_lm_usage(step, step_dir, "decision_planner", decision_out)
+            record_lm_usage(
+                step, step_dir, "decision_planner", decision_out, decision_timing
+            )
             in_tokens, out_tokens = extract_token_usage(decision_out)
             total_input_tokens += in_tokens
             total_output_tokens += out_tokens
             step_input_tokens += in_tokens
             step_output_tokens += out_tokens
 
-            record_lm_usage(step, step_dir, "assignment_composer", assignment_out)
+            record_lm_usage(
+                step,
+                step_dir,
+                "assignment_composer",
+                assignment_out,
+                assignment_timing,
+            )
             in_tokens, out_tokens = extract_token_usage(assignment_out)
             total_input_tokens += in_tokens
             total_output_tokens += out_tokens
@@ -1574,7 +1615,9 @@ def main() -> None:
             step_output_tokens += out_tokens
 
             if future_action is not None and action_out is not None:
-                record_lm_usage(step, step_dir, "action_selector", action_out)
+                record_lm_usage(
+                    step, step_dir, "action_selector", action_out, action_timing
+                )
                 in_tokens, out_tokens = extract_token_usage(action_out)
                 total_input_tokens += in_tokens
                 total_output_tokens += out_tokens
@@ -2106,8 +2149,10 @@ def main() -> None:
         }
         write_json(step_dir / "outcome_input.json", outcome_input)
 
-        outcome_out = robust_predict(outcome_evaluator, **outcome_input)
-        record_lm_usage(step, step_dir, "outcome_evaluator", outcome_out)
+        outcome_out, outcome_timing = robust_predict(outcome_evaluator, **outcome_input)
+        record_lm_usage(
+            step, step_dir, "outcome_evaluator", outcome_out, outcome_timing
+        )
         in_tokens, out_tokens = extract_token_usage(outcome_out)
         total_input_tokens += in_tokens
         total_output_tokens += out_tokens
@@ -2173,8 +2218,12 @@ def main() -> None:
             "stderr_truncated": truncate_text(stderr, limit=1200, strategy="tail"),
         }
         write_json(step_dir / "evidence_prefilter_input.json", prefilter_input)
-        prefilter_out = robust_predict(evidence_prefilter, **prefilter_input)
-        record_lm_usage(step, step_dir, "evidence_prefilter", prefilter_out)
+        prefilter_out, prefilter_timing = robust_predict(
+            evidence_prefilter, **prefilter_input
+        )
+        record_lm_usage(
+            step, step_dir, "evidence_prefilter", prefilter_out, prefilter_timing
+        )
         in_tokens, out_tokens = extract_token_usage(prefilter_out)
         total_input_tokens += in_tokens
         total_output_tokens += out_tokens
