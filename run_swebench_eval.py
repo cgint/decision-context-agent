@@ -49,6 +49,21 @@ def prefixed_print(prefix: str, msg: str) -> None:
             print(f"{prefix} {line}")
 
 
+def normalize_unified_diff(patch: str) -> str:
+    """
+    Normalize a unified diff for downstream tooling.
+
+    The SWE-bench harness applies patches using `patch`, which expects the patch
+    file to end with a newline. If we persist a patch without a trailing newline,
+    the harness can fail with: "patch unexpectedly ends in middle of line".
+    """
+    if not patch:
+        return patch
+    if not patch.endswith("\n"):
+        return patch + "\n"
+    return patch
+
+
 def extract_failure_info(
     instance_output_dir: Path,
     agent_run_dir: Optional[str],
@@ -195,6 +210,7 @@ class EvaluationConfig:
     pi_model: Optional[str] = None
     pi_thinking_level: Optional[str] = None
     pi_timeout_seconds: int = 1800
+    pi_disable_manager_bridge: bool = False
 
 
 @dataclass
@@ -477,6 +493,7 @@ def run_agent(
 
             # Extract the patch the agent produced
             model_patch = extract_patch(workspace_dir, instance["base_commit"], prefix)
+            model_patch = normalize_unified_diff(model_patch)
 
             # Save the patch
             (instance_output_dir / "model_patch.diff").write_text(model_patch)
@@ -494,6 +511,7 @@ def run_agent(
         except subprocess.TimeoutExpired:
             # Still try to extract patch even on timeout
             model_patch = extract_patch(workspace_dir, instance["base_commit"], prefix)
+            model_patch = normalize_unified_diff(model_patch)
             (instance_output_dir / "model_patch.diff").write_text(model_patch)
             return (
                 False,
@@ -508,21 +526,25 @@ def run_agent(
     try:
         repo_root = Path(__file__).resolve().parent
         extension_path = (repo_root / "integrations" / "pi_mono" / "extensions" / "manager_bridge" / "index.ts").resolve()
-        manager_log_dir = (agent_run_dir / "pi_mono_bridge").resolve()
         transcript_path = agent_run_dir / "pi_rpc_transcript.jsonl"
 
-        pi_args: list[str] = [
-            "-e",
-            str(extension_path),
-            "--manager-url",
-            "stdio:",
-            "--manager-log-dir",
-            str(manager_log_dir),
-            "--manager-events",
-            "session_start,before_agent_start,tool_call,turn_end",
-            "--manager-steer-policy",
-            "off",
-        ]
+        pi_args: list[str] = []
+        if not config.pi_disable_manager_bridge:
+            manager_log_dir = (agent_run_dir / "pi_mono_bridge").resolve()
+            pi_args.extend(
+                [
+                    "-e",
+                    str(extension_path),
+                    "--manager-url",
+                    "stdio:",
+                    "--manager-log-dir",
+                    str(manager_log_dir),
+                    "--manager-events",
+                    "session_start,before_agent_start,tool_call,turn_end",
+                    "--manager-steer-policy",
+                    "off",
+                ]
+            )
         if config.pi_provider:
             pi_args.extend(["--provider", config.pi_provider])
         if config.pi_model:
@@ -558,7 +580,29 @@ def run_agent(
         (instance_output_dir / "agent_stderr.txt").write_text("".join(stderr_out), encoding="utf-8")
 
         model_patch = extract_patch(workspace_dir, instance["base_commit"], prefix)
+        model_patch = normalize_unified_diff(model_patch)
         (instance_output_dir / "model_patch.diff").write_text(model_patch)
+
+        # If the provider terminated mid-run, surface that clearly. If no patch was
+        # produced, treat it as an agent failure (otherwise we keep going and let
+        # the harness judge the patch).
+        stop_reason: str | None = None
+        stop_error_message: str | None = None
+        if pi_result.agent_end_event and isinstance(pi_result.agent_end_event, dict):
+            for msg in reversed(pi_result.agent_end_event.get("messages", []) or []):
+                if isinstance(msg, dict) and msg.get("stopReason") is not None:
+                    stop_reason = msg.get("stopReason")
+                    stop_error_message = msg.get("errorMessage")
+                    break
+
+        if stop_reason == "error":
+            termination_line = f"pi provider stopReason=error: {stop_error_message or 'unknown'}\n"
+            (instance_output_dir / "agent_stderr.txt").write_text(
+                termination_line + "".join(stderr_out),
+                encoding="utf-8",
+            )
+            if not model_patch:
+                return False, termination_line.strip(), str(agent_run_dir), model_patch
 
         if not pi_result.ok:
             return False, pi_result.error or "pi rpc run failed", str(agent_run_dir), model_patch
@@ -566,6 +610,7 @@ def run_agent(
         return True, None, str(agent_run_dir), model_patch
     except subprocess.TimeoutExpired:
         model_patch = extract_patch(workspace_dir, instance["base_commit"], prefix)
+        model_patch = normalize_unified_diff(model_patch)
         (instance_output_dir / "model_patch.diff").write_text(model_patch)
         return False, "pi rpc timed out", str(agent_run_dir), model_patch
     except Exception as e:
@@ -807,15 +852,14 @@ def evaluate_instance(
             instance, workspace_dir, config, instance_output_dir, prefix
         )
 
-        # Create prediction object for SWE-bench format
-        prediction = (
-            Prediction(
-                instance_id=instance_id,
-                model_patch=model_patch,
-                model_name_or_path=f"decision-context-agent-{config.model}",
-            )
-            if model_patch
-            else None
+        # Create prediction object for SWE-bench format.
+        # Always include an entry, even for an empty patch, so the official
+        # harness can categorize it as `empty_patch` and our instance counts
+        # remain consistent.
+        prediction = Prediction(
+            instance_id=instance_id,
+            model_patch=normalize_unified_diff(model_patch or ""),
+            model_name_or_path=f"decision-context-agent-{config.model}",
         )
 
         if not agent_success:
@@ -938,22 +982,29 @@ def run_docker_evaluation(
     """
     from swebench.harness.run_evaluation import main as run_harness
 
+    import contextlib
+    import shutil
+
     # Write predictions to file in SWE-bench format
     predictions_path = config.output_dir / "predictions.json"
-    predictions_data = [asdict(p) for p in predictions if p.model_patch]
+    predictions_data = [asdict(p) for p in predictions]
     predictions_path.write_text(json.dumps(predictions_data, indent=2))
 
     print("\n" + "=" * 80)
     print("RUNNING DOCKER-BASED EVALUATION (SWE-bench Official Harness)")
     print("=" * 80)
     print(f"Predictions file: {predictions_path}")
+    num_with_patch = sum(1 for p in predictions_data if p.get("model_patch"))
+    num_empty_patch = len(predictions_data) - num_with_patch
     print(f"Number of predictions: {len(predictions_data)}")
+    print(f"Predictions with patches: {num_with_patch}")
+    print(f"Predictions with empty patches: {num_empty_patch}")
     print(f"Max workers: {config.max_workers}")
     print("\nThis may take a while as Docker images are pulled and tests run...")
     print("=" * 80)
 
     if not predictions_data:
-        print("WARNING: No predictions with patches to evaluate!")
+        print("WARNING: No predictions to evaluate!")
         return {}
 
     # Get list of instance IDs we have predictions for
@@ -964,23 +1015,34 @@ def run_docker_evaluation(
     report_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        run_harness(
-            dataset_name="princeton-nlp/SWE-bench_Lite",
-            split="test",
-            instance_ids=instance_ids,
-            predictions_path=str(predictions_path),
-            max_workers=config.max_workers,
-            force_rebuild=False,
-            cache_level="env",  # Cache base + environment images
-            clean=False,  # Keep artifacts for debugging
-            open_file_limit=4096,
-            run_id=config.eval_id,
-            timeout=1800,  # 30 minute timeout per instance
-            namespace="swebench",
-            rewrite_reports=False,
-            modal=False,  # Use local Docker, not Modal
-            report_dir=str(report_dir),
-        )
+        harness_stdout_path = report_dir / "harness_stdout.txt"
+        harness_stderr_path = report_dir / "harness_stderr.txt"
+
+        # The harness is chatty and writes important failure context to stdout/stderr.
+        # Persist both streams for later triage.
+        with (
+            harness_stdout_path.open("w", encoding="utf-8") as stdout_f,
+            harness_stderr_path.open("w", encoding="utf-8") as stderr_f,
+            contextlib.redirect_stdout(stdout_f),
+            contextlib.redirect_stderr(stderr_f),
+        ):
+            run_harness(
+                dataset_name="princeton-nlp/SWE-bench_Lite",
+                split="test",
+                instance_ids=instance_ids,
+                predictions_path=str(predictions_path),
+                max_workers=config.max_workers,
+                force_rebuild=False,
+                cache_level="env",  # Cache base + environment images
+                clean=False,  # Keep artifacts for debugging
+                open_file_limit=4096,
+                run_id=config.eval_id,
+                timeout=1800,  # 30 minute timeout per instance
+                namespace="swebench",
+                rewrite_reports=False,
+                modal=False,  # Use local Docker, not Modal
+                report_dir=str(report_dir),
+            )
     except Exception as e:
         print(f"Docker evaluation error: {e}")
         print("\nMake sure Docker is running and you have sufficient resources:")
@@ -989,7 +1051,7 @@ def run_docker_evaluation(
         print("  - 8+ CPU cores recommended")
         return {}
 
-    # Parse results from the harness output
+    # Parse results from the harness output.
     # The harness writes a report file to the current directory with pattern:
     # {model_name}.{run_id}.json
     results: dict[str, Any] = {}
@@ -1015,6 +1077,9 @@ def run_docker_evaluation(
         if f not in possible_locations:
             possible_locations.append(f)
 
+    parsed_from: Optional[Path] = None
+    raw_report_data: Optional[dict[str, Any]] = None
+
     for loc in possible_locations:
         if loc.exists():
             try:
@@ -1022,12 +1087,34 @@ def run_docker_evaluation(
                 if isinstance(data, dict):
                     # New format: resolved_ids is a list of instance IDs that passed
                     if "resolved_ids" in data:
+                        raw_report_data = data
+                        parsed_from = loc
+
                         for instance_id in data.get("resolved_ids", []):
-                            results[instance_id] = {"resolved": True}
-                        # Mark unresolved ones
+                            results[instance_id] = {
+                                "resolved": True,
+                                "category": "resolved",
+                            }
                         for instance_id in data.get("unresolved_ids", []):
-                            if instance_id not in results:
-                                results[instance_id] = {"resolved": False}
+                            results[instance_id] = {
+                                "resolved": False,
+                                "category": "unresolved",
+                            }
+                        for instance_id in data.get("error_ids", []):
+                            results[instance_id] = {
+                                "resolved": False,
+                                "category": "error",
+                            }
+                        for instance_id in data.get("incomplete_ids", []):
+                            results[instance_id] = {
+                                "resolved": False,
+                                "category": "incomplete",
+                            }
+                        for instance_id in data.get("empty_patch_ids", []):
+                            results[instance_id] = {
+                                "resolved": False,
+                                "category": "empty_patch",
+                            }
                         print(f"Parsed harness report from: {loc}")
                         break
                     # Old format: dict per instance
@@ -1046,6 +1133,28 @@ def run_docker_evaluation(
     if not results:
         print(
             f"Warning: Could not find or parse harness report. Looked in: {possible_locations}"
+        )
+
+    # Persist a copy of the parsed report (the harness may write it outside report_dir).
+    if parsed_from and raw_report_data is not None:
+        report_copy = report_dir / "harness_report.json"
+        report_copy.write_text(json.dumps(raw_report_data, indent=2))
+        if parsed_from.resolve() != report_copy.resolve():
+            try:
+                shutil.copy2(parsed_from, report_dir / parsed_from.name)
+            except OSError:
+                # Non-fatal; we still have harness_report.json
+                pass
+
+        (report_dir / "harness_report_locations.json").write_text(
+            json.dumps(
+                {
+                    "parsed_from": str(parsed_from),
+                    "searched_locations": [str(p) for p in possible_locations],
+                    "copied_to": str(report_copy),
+                },
+                indent=2,
+            )
         )
 
     return results
@@ -1073,8 +1182,14 @@ def print_summary(
             for r in results
             if harness_results.get(r.instance_id, {}).get("resolved", False)
         )
+        harness_errors = sum(
+            1
+            for r in results
+            if harness_results.get(r.instance_id, {}).get("category") == "error"
+        )
     else:
         tests_passed = sum(1 for r in results if r.tests_passed)
+        harness_errors = 0
 
     print(f"\nTotal instances: {total}")
     print(
@@ -1083,6 +1198,8 @@ def print_summary(
     print(
         f"Tests passed (resolved): {tests_passed}/{total} ({100*tests_passed/total:.1f}%)"
     )
+    if config.evaluation_mode == "docker" and harness_results:
+        print(f"Harness errors: {harness_errors}/{total}")
     print(f"Total time: {total_time:.1f}s ({total_time/60:.1f}m)")
     print(f"Average time per instance: {total_time/total:.1f}s")
 
@@ -1091,8 +1208,28 @@ def print_summary(
     for r in results:
         # Check Docker harness results if available
         if config.evaluation_mode == "docker" and harness_results:
-            resolved = harness_results.get(r.instance_id, {}).get("resolved", False)
-            status = "PASS" if resolved else "FAIL"
+            instance_harness = harness_results.get(r.instance_id, {})
+            category = (
+                instance_harness.get("category")
+                if isinstance(instance_harness, dict)
+                else None
+            )
+            if category == "resolved":
+                status = "PASS"
+            elif category == "error":
+                status = "ERROR"
+            elif category == "incomplete":
+                status = "INCOMP"
+            elif category == "empty_patch":
+                status = "EMPTY"
+            else:
+                # Unknown category or older harness report schema
+                resolved = (
+                    instance_harness.get("resolved", False)
+                    if isinstance(instance_harness, dict)
+                    else bool(instance_harness)
+                )
+                status = "PASS" if resolved else "FAIL"
         else:
             status = "PASS" if r.tests_passed else "FAIL"
 
@@ -1103,6 +1240,7 @@ def print_summary(
     print("\nResults saved to:", config.output_dir / "results.json")
     if config.evaluation_mode == "docker":
         print("Predictions saved to:", config.output_dir / "predictions.json")
+        print("Harness logs saved to:", config.output_dir / "swebench_reports")
 
 
 def main():
@@ -1174,6 +1312,11 @@ def main():
         default=1800,
         help="(pi_rpc) Timeout in seconds (default: 1800)",
     )
+    parser.add_argument(
+        "--pi-disable-manager-bridge",
+        action="store_true",
+        help="(pi_rpc) Do not load the Decision Context manager-bridge extension (Pi-only baseline)",
+    )
 
     parser.add_argument(
         "--output-dir",
@@ -1233,6 +1376,7 @@ def main():
         pi_model=args.pi_model,
         pi_thinking_level=args.pi_thinking_level,
         pi_timeout_seconds=args.pi_timeout_seconds,
+        pi_disable_manager_bridge=bool(args.pi_disable_manager_bridge),
         output_dir=eval_dir,
         workspace_root=workspace_root,
         started_at=datetime.now().isoformat(),
@@ -1305,6 +1449,20 @@ def main():
             instance_harness = harness_results.get(result.instance_id, {})
             if isinstance(instance_harness, dict):
                 result.tests_passed = instance_harness.get("resolved", False)
+                category = instance_harness.get("category")
+                if (
+                    category in {"error", "incomplete", "empty_patch"}
+                    and not result.error_message
+                ):
+                    result.error_message = (
+                        f"SWE-bench harness {category} (see "
+                        f"{config.output_dir / 'swebench_reports' / 'harness_stdout.txt'})"
+                    )
+                elif category == "unresolved" and not result.error_message:
+                    result.error_message = (
+                        "SWE-bench tests failed (unresolved; see "
+                        f"{config.output_dir / 'swebench_reports' / 'harness_stdout.txt'})"
+                    )
             elif isinstance(instance_harness, bool):
                 result.tests_passed = instance_harness
 

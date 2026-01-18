@@ -15,8 +15,9 @@ This runbook lets you run Pi Mono as the **agent loop** while this repo provides
   - forwards lifecycle events to the Manager sidecar
   - can block tool calls (`tool_call`) and inject steering (`turn_end`)
 - **Manager sidecar (Python)**: `scripts/pi_mono_manager_bridge_server.py` + `pi_mono_manager_bridge.py`
-  - logs events to `data/pi_mono_bridge/<session>/events.jsonl`
-  - optionally calls DSPy on `turn_end` and logs timings to `data/pi_mono_bridge/<session>/lm_usage_events.jsonl`
+  - can run as an HTTP server (manual) or as a stdio process (auto-spawned by the extension)
+  - logs events to a per-run directory (default: `data/pi_mono_bridge/`; configurable via `--manager-log-dir`)
+  - optionally calls DSPy on `turn_end` and logs timings to `.../lm_usage_events.jsonl`
 
 ## Prerequisites
 
@@ -31,12 +32,22 @@ This runbook lets you run Pi Mono as the **agent loop** while this repo provides
 
 ## Step-by-step: quick end-to-end (trace-only, fastest)
 
-### Step 1: (Optional) run unit tests
+### Step 1: run the helper script (recommended)
+
+This does a baseline `pi -p` check, then runs Pi with the extension in `stdio:` mode and confirms logs were written:
+
+`./scripts/run_pi_variant_b.sh`
+
+Logs are written under: `data/pi_mono_bridge_runs/<timestamp>/...`
+
+### Step 2: (Optional) run unit tests
 
 - Python: `uv run python test_pi_mono_manager_bridge.py`
 - Extension (bundles with pi-mono’s esbuild): `node scripts/test_pi_mono_manager_bridge_extension.mjs`
 
-### Step 2: start the Manager sidecar (HTTP)
+## Optional: HTTP mode (manual sidecar, shows live RTT in Pi UI)
+
+### Step 1: start the Manager sidecar (HTTP)
 
 In repo root:
 
@@ -46,7 +57,7 @@ Quick health check:
 
 `curl -s http://127.0.0.1:8787/healthz`
 
-### Step 3: run Pi with the extension
+### Step 2: run Pi with the extension
 
 In another terminal (repo root), load the extension and point it at the sidecar:
 
@@ -56,7 +67,7 @@ Notes:
 - Default forwarded events are minimal: `session_start,before_agent_start,tool_call,turn_end`
 - Default steering policy is conservative: `--manager-steer-policy on_error`
 
-### Step 4: trigger a tool call + confirm bridging works
+### Step 3: trigger a tool call + confirm bridging works
 
 In Pi, ask for a trivial bash command (example prompt):
 
@@ -100,7 +111,7 @@ Run Pi and ensure it awaits steering:
 
 Verify after a run:
 
-- `data/pi_mono_bridge/<session>/lm_usage_events.jsonl` contains entries with `timing.started_at`, `timing.ended_at`, `timing.duration_ms`.
+- `.../lm_usage_events.jsonl` contains entries with `timing.started_at`, `timing.ended_at`, `timing.duration_ms`.
 
 ## Regenerating the SVG diagrams
 

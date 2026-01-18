@@ -13,6 +13,12 @@ Verifies Pi RPC mode + extension loading (no prompts, no tools):
 
 `python3 scripts/pi_rpc_smoke_test.py`
 
+## Quick end-to-end (single prompt, produces manager logs)
+
+Runs `pi -p ...` with the manager-bridge extension in `stdio:` mode and writes logs under `data/pi_mono_bridge_runs/<timestamp>/...`:
+
+`./scripts/run_pi_variant_b.sh`
+
 ## Run A: ACP baseline
 
 Example: 1 instance, Docker harness:
@@ -28,6 +34,10 @@ Outputs:
 Example: 1 instance, Docker harness:
 
 `python3 run_swebench_eval.py --num-instances 1 --evaluation-mode docker --agent-impl pi_rpc`
+
+Pi-only baseline (no manager-bridge extension):
+
+`python3 run_swebench_eval.py --num-instances 1 --evaluation-mode docker --agent-impl pi_rpc --pi-disable-manager-bridge`
 
 Optional model selection for Pi (overrides your local `pi` config):
 
@@ -50,4 +60,3 @@ Outputs:
 
 - `--agent-impl pi_rpc` uses `--manager-url stdio:` internally, so it does **not** require binding TCP ports or Unix sockets.
 - Default behavior in Pi mode is **trace-only** (`--manager-steer-policy off`) to avoid blocking on Manager “steering”.
-

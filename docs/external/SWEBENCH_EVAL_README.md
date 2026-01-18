@@ -116,8 +116,28 @@ FAIL   django__django-13456                        (420.2s)
 | `--max-steps` | 15 | Maximum reasoning steps for the agent |
 | `--phase` | `autopilot` | Agent phase |
 | `--interaction-mode` | `none` | Interaction mode (none/human) |
+| `--agent-impl` | `online_replay` | Agent loop: `online_replay` (Manager→Actor) or `pi_rpc` (Pi vehicle via RPC) |
+| `--pi-provider` | unset | (pi_rpc) Pi provider override; otherwise Pi uses local defaults |
+| `--pi-model` | unset | (pi_rpc) Pi model override; otherwise Pi uses local defaults |
+| `--pi-thinking-level` | unset | (pi_rpc) Pi thinking level override |
+| `--pi-timeout-seconds` | 1800 | (pi_rpc) Timeout per instance |
+| `--pi-disable-manager-bridge` | false | (pi_rpc) Run Pi without the Decision Context manager-bridge extension |
 | `--output-dir` | `data/swebench_eval` | Output directory for results |
 | `--cache-dir` | `data/swebench_cache` | Cache directory for dataset |
+
+## Output Artifacts (Docker Mode)
+
+For `--evaluation-mode docker`, the official SWE-bench harness produces most of the authoritative outcome info.
+This repository persists the key harness outputs under:
+
+- `data/swebench_eval/<eval_id>/swebench_reports/harness_stdout.txt`
+- `data/swebench_eval/<eval_id>/swebench_reports/harness_stderr.txt`
+- `data/swebench_eval/<eval_id>/swebench_reports/harness_report.json` (copy of the parsed harness report)
+
+Per-instance agent artifacts are stored under:
+
+- `data/swebench_eval/<eval_id>/instances/<instance_id>/model_patch.diff`
+- `data/swebench_eval/<eval_id>/instances/<instance_id>/agent_run/` (agent transcript/logs; contents depend on `--agent-impl`)
 
 ## Troubleshooting
 
@@ -139,7 +159,21 @@ python3 -c "from datasets import load_dataset; load_dataset('princeton-nlp/SWE-b
 
 - Ensure pytest is installed in the repo's environment
 - Some repos may require additional setup (virtual env, dependencies)
-- Check `test_stderr.txt` for details
+- In `--evaluation-mode local`, check `test_stderr.txt` for details
+- In `--evaluation-mode docker`, check:
+  - `data/swebench_eval/<eval_id>/swebench_reports/harness_stdout.txt`
+  - `data/swebench_eval/<eval_id>/swebench_reports/harness_stderr.txt`
+  - `data/swebench_eval/<eval_id>/swebench_reports/harness_report.json`
+
+### Harness reports “ERROR” (Docker mode)
+
+If the summary shows `ERROR` for an instance, it usually means the official SWE-bench harness failed to complete that instance run (e.g., environment/build failure, crash while applying patch, crash during test invocation).
+The quickest way to diagnose is to open the harness logs in `data/swebench_eval/<eval_id>/swebench_reports/`.
+
+### Harness reports “EMPTY” (Docker mode)
+
+If the summary shows `EMPTY`, the agent produced an empty patch (no code changes). The harness treats this as an “empty patch” outcome.
+Check `data/swebench_eval/<eval_id>/instances/<instance_id>/model_patch.diff` and the agent logs in `data/swebench_eval/<eval_id>/instances/<instance_id>/agent_run/` to understand why no change was made.
 
 ### Agent timeout
 

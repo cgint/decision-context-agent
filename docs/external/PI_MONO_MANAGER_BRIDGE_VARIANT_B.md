@@ -14,7 +14,7 @@ This matches our “Manager add-ons” scope (supervision, traces, pattern synth
 ## What’s implemented in this repo
 
 - Python bridge core: `pi_mono_manager_bridge.py`
-  - Session state + event logging to `data/pi_mono_bridge/<session>/events.jsonl`
+  - Session state + event logging to `<log_dir>/<session>/events.jsonl` (default: `data/pi_mono_bridge/`; configurable via `--manager-log-dir`)
   - Optional DSPy-based “steer” generation on `turn_end`
 - HTTP server wrapper: `scripts/pi_mono_manager_bridge_server.py`
   - `POST /v1/event` with `{session_id, event}`
@@ -22,6 +22,18 @@ This matches our “Manager add-ons” scope (supervision, traces, pattern synth
   - Forwards Pi hook events to the server
   - Applies `{ block, reason }` responses to `tool_call`
   - Injects `actions.steer` back via `pi.sendMessage(..., { deliverAs: "steer"|"nextTurn" })` (no immediate extra turn; default steer on errors only)
+
+## Current default: stdio mode (auto-spawned sidecar, no sockets)
+
+When `--manager-url stdio:` is used, the extension spawns the sidecar itself and communicates over stdin/stdout:
+
+- no TCP port binding
+- no unix socket binding
+- the sidecar lifecycle is tied to the `pi` process (no stray background server)
+
+Recommended single-command run (writes logs under `data/pi_mono_bridge_runs/<timestamp>/...`):
+
+`./scripts/run_pi_variant_b.sh`
 
 ## Run the bridge server
 
@@ -58,6 +70,15 @@ Or use a Unix socket URL (matches `--unix-socket`):
 Or via flags (preferred when scripting):
 
 `pi -e /path/to/decision-context-agent/integrations/pi_mono/extensions/manager_bridge/index.ts --manager-url http://127.0.0.1:8787 --manager-timeout-ms 800`
+
+Stdio mode (recommended):
+
+`pi -e /path/to/decision-context-agent/integrations/pi_mono/extensions/manager_bridge/index.ts --manager-url stdio: --manager-log-dir data/pi_mono_bridge_runs/manual_test`
+
+Related flags:
+
+- `--manager-log-dir <dir>` (or `DCA_MANAGER_LOG_DIR`)
+- `--manager-python <python>` (or `DCA_MANAGER_PYTHON`)
 
 Event forwarding (reduce overhead by default; use `"all"` for full tracing):
 
@@ -131,6 +152,13 @@ Response:
    - Find the new session folder under `data/pi_mono_bridge/`
    - Confirm `events.jsonl` is being appended
 
+### Step 3 (alternative): End-to-end with Pi in stdio mode (no background server)
+
+1. Run:
+   - `./scripts/run_pi_variant_b.sh`
+2. Verify logs:
+   - look under `data/pi_mono_bridge_runs/<timestamp>/...`
+
 ### Step 4: Optional — enable DSPy steering + verify LM timings
 
 1. Start the manager bridge with LM enabled:
@@ -138,5 +166,5 @@ Response:
 2. Ensure Pi is set to await steering (or set it explicitly):
    - `--manager-steer-policy on_error` (default) or `--manager-steer-policy always`
 3. After a run, inspect:
-   - `data/pi_mono_bridge/<session>/lm_usage_events.jsonl`
+   - `<log_dir>/<session>/lm_usage_events.jsonl` (default: `data/pi_mono_bridge/`)
 4. Expect each entry to include `timing.duration_ms` (plus `started_at`/`ended_at`).
