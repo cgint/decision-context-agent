@@ -1,0 +1,13 @@
+direction: right
+
+pi: "**Pi Mono (pi)**\nAgent loop (LLM + tools)"
+ext: "**Extension: manager_bridge**\nForwards events\nApplies block/steer"
+mgr: "**Manager sidecar (Python)**\n`pi_mono_manager_bridge.py`\nLogs + optional DSPy steering"
+logs: "**Logs**\n`data/pi_mono_bridge/<session>/*`"
+llm: "**LLM provider**\n(Gemini/Vertex)\n(optional)"
+
+pi -> ext: "loads"
+ext -> mgr: "POST /v1/event\n(session_start, tool_call, turn_end, ...)"
+mgr -> ext: "actions: {block, reason, steer}\n+ timing"
+mgr -> logs: "events.jsonl\nlm_usage_events.jsonl"
+mgr -> llm: "DSPy calls\n(optional)"

@@ -16,6 +16,7 @@ Build a long-horizon **Manager** that delegates atomic subtasks to an executing 
 - Decision recorded: tool/file mechanics are not a central manager concern; actor is an existing coding agent and owns execution details.
 - `online_replay_loop.py` defaults to `--actor opencode-acp` (Assignments + Actor Results via ACP).
 - ACP stdio read limit is raised to avoid `LimitOverrunError` when OpenCode emits long stdout lines.
+- Pi Mono “Variant B” manager-bridge PoC exists (Pi loop + extension ↔ external Manager sidecar): `docs/external/PI_MONO_MANAGER_BRIDGE_VARIANT_B.md`.
 
 # Decisions
 
@@ -27,6 +28,7 @@ Build a long-horizon **Manager** that delegates atomic subtasks to an executing 
 # Open questions
 
 - Do we need a dedicated ACP adapter for Pi-Mono, or should we standardize on OpenCode ACP initially?
+- Should we benchmark “Pi as vehicle” (extension hook-in + sidecar Manager) vs OpenCode-over-ACP for per-turn latency?
 - What heuristics should the Manager use for loop detection (count, time, or evidence type)?
 
 # Migration learnings

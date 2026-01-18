@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -787,6 +788,114 @@ def apply_command_policy(
         task = task or "Gather evidence safely; avoid destructive operations."
         success_criteria = (
             success_criteria or "Evidence collected to choose a safe next step."
+        )
+
+    def _is_old_text_not_found_error(event: dict) -> bool:
+        if not isinstance(event, dict):
+            return False
+        if str(event.get("action_type", "")).strip().lower() != "edit":
+            return False
+        if event.get("ok") is not False:
+            return False
+        excerpt = str(event.get("error_excerpt", "") or "").lower()
+        return "old_text not found" in excerpt or "could not find old_text" in excerpt
+
+    def _extract_locate_tokens(old_text: str, max_tokens: int = 3) -> list[str]:
+        raw = old_text or ""
+        tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", raw)
+        stop = {
+            "if",
+            "elif",
+            "else",
+            "for",
+            "while",
+            "return",
+            "import",
+            "from",
+            "def",
+            "class",
+            "try",
+            "except",
+            "with",
+            "as",
+            "and",
+            "or",
+            "not",
+            "isinstance",
+            "self",
+            "true",
+            "false",
+            "none",
+        }
+        unique: list[str] = []
+        for tok in tokens:
+            if tok.lower() in stop:
+                continue
+            if tok not in unique:
+                unique.append(tok)
+
+        def score(tok: str) -> tuple[int, int]:
+            bonus = 0
+            if tok.startswith("_"):
+                bonus += 3
+            if "_" in tok:
+                bonus += 2
+            if any(c.isupper() for c in tok):
+                bonus += 1
+            return (bonus, len(tok))
+
+        unique.sort(key=score, reverse=True)
+        return unique[:max_tokens]
+
+    def _build_locate_command(edit_command: str) -> str:
+        try:
+            payload = json.loads(edit_command)
+        except json.JSONDecodeError:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        path = str(payload.get("path", "") or "").strip()
+        old_text = str(payload.get("old_text", "") or "")
+        tokens = _extract_locate_tokens(old_text, max_tokens=3)
+        query = "|".join(tokens) if tokens else ""
+        if not query:
+            first_line = next(
+                (line.strip() for line in old_text.splitlines() if line.strip()), ""
+            )
+            query = first_line[:80] if first_line else "TODO"
+        quoted_path = shlex.quote(path) if path else "."
+        quoted_query = shlex.quote(query)
+        return f"rg -n {quoted_query} {quoted_path}"
+
+    history = safe_parse_history_events(history_events_json)
+    recent = history[-8:] if isinstance(history, list) else []
+    old_text_not_found_failures = sum(
+        1 for evt in recent if isinstance(evt, dict) and _is_old_text_not_found_error(evt)
+    )
+    last_evt = recent[-1] if recent else {}
+    if (
+        str(action_type).strip().lower() == "edit"
+        and command_intent == "edit"
+        and old_text_not_found_failures >= 2
+        and _is_old_text_not_found_error(last_evt if isinstance(last_evt, dict) else {})
+    ):
+        locate_cmd = _build_locate_command(command)
+        rewrites.append(
+            {
+                "kind": "loop_breaker_locate_old_text",
+                "reason": "recent edits failed due to old_text mismatch; locate the exact region before editing again",
+                "original_action_type": action_type,
+                "final_action_type": "shell_command",
+                "final_command": locate_cmd,
+            }
+        )
+        action_type = "shell_command"
+        command_intent = "read"
+        command = locate_cmd
+        task = task or "Locate the intended edit region (old_text was not found)."
+        success_criteria = (
+            success_criteria
+            or "Locate matching code with line numbers so the next edit can be applied precisely."
         )
 
     return {

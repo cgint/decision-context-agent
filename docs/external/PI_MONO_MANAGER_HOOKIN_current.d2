@@ -1,0 +1,13 @@
+direction: right
+
+Manager: "Decision Context Agent (this repo)\nManager loop (DSPy supervision)"
+ACP: "ACP boundary\n(JSON-RPC over stdio)"
+Actor: "Actor process\n(opencode acp)"
+Tools: "Workspace tools\n(read/edit/bash)"
+
+Manager -> ACP: "ASSIGNMENT / prompt_turn"
+ACP -> Actor: "streaming + tool calls"
+Actor -> Tools: "execute tools"
+Tools -> Actor: "tool results"
+Actor -> ACP: "RESULT + evidence"
+ACP -> Manager: "updates"

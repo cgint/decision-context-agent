@@ -1,0 +1,24 @@
+direction: right
+
+user: "**User**"
+
+pi: "**Pi Mono (pi)**"
+ext: "**Extension: manager_bridge**"
+mgr: "**Manager sidecar (Python)**"
+tools: "**Tools**\n(bash/read/write/edit/...)"
+
+user -> pi: "prompt"
+
+pi -> ext: "tool_call hook"
+ext -> mgr: "POST /v1/event\ntype=tool_call (await)"
+mgr -> ext: "actions.block? + reason + timing"
+ext -> pi: "block tool_call or allow"
+
+pi -> tools: "execute tool (if allowed)"
+tools -> pi: "tool_result"
+
+pi -> ext: "turn_end hook"
+ext -> mgr: "POST /v1/event\ntype=turn_end\n(await only if steer-policy requires)"
+mgr -> ext: "actions.steer? + timing"
+ext -> pi: "sendMessage(steer)\n(deliverAs=steer|nextTurn)"
+

@@ -29,11 +29,14 @@ import shutil
 import subprocess
 import sys
 import threading
+from contextlib import suppress
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Optional
+
+from pi_rpc_client import run_pi_rpc_prompt
 
 # Thread-safe print lock for concurrent output
 _print_lock = threading.Lock()
@@ -187,6 +190,11 @@ class EvaluationConfig:
     evaluation_mode: Literal["local", "docker"] = "docker"
     max_workers: int = 4  # For Docker parallel evaluation
     repo_cache_dir: Optional[Path] = None  # Cache directory for repositories
+    agent_impl: Literal["online_replay", "pi_rpc"] = "online_replay"
+    pi_provider: Optional[str] = None
+    pi_model: Optional[str] = None
+    pi_thinking_level: Optional[str] = None
+    pi_timeout_seconds: int = 1800
 
 
 @dataclass
@@ -431,69 +439,137 @@ def run_agent(
     agent_run_dir = instance_output_dir / "agent_run"
     agent_run_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = [
-        "python3",
-        "online_replay_loop.py",
-        "--user-request",
-        user_request,
-        "--run-dir",
-        str(agent_run_dir),
-        "--workspace-dir",
-        str(workspace_dir),
-        "--model",
-        config.model,
-        "--max-steps",
-        str(config.max_steps),
-        "--phase",
-        config.phase,
-        "--interaction-mode",
-        config.interaction_mode,
-        "--actor",
-        config.actor,
-        "--no-snapshot-autodetect",
-    ]
+    if config.agent_impl == "online_replay":
+        cmd = [
+            "python3",
+            "online_replay_loop.py",
+            "--user-request",
+            user_request,
+            "--run-dir",
+            str(agent_run_dir),
+            "--workspace-dir",
+            str(workspace_dir),
+            "--model",
+            config.model,
+            "--max-steps",
+            str(config.max_steps),
+            "--phase",
+            config.phase,
+            "--interaction-mode",
+            config.interaction_mode,
+            "--actor",
+            config.actor,
+            "--no-snapshot-autodetect",
+        ]
 
-    prefixed_print(prefix, f"Running agent (max {config.max_steps} steps)...")
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=1800,  # 30 minute timeout
-        )
+        prefixed_print(prefix, f"Running agent (max {config.max_steps} steps)...")
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=1800,  # 30 minute timeout
+            )
 
-        # Write agent output for debugging
-        (instance_output_dir / "agent_stdout.txt").write_text(result.stdout)
-        (instance_output_dir / "agent_stderr.txt").write_text(result.stderr)
+            # Write agent output for debugging
+            (instance_output_dir / "agent_stdout.txt").write_text(result.stdout)
+            (instance_output_dir / "agent_stderr.txt").write_text(result.stderr)
 
-        # Extract the patch the agent produced
-        model_patch = extract_patch(workspace_dir, instance["base_commit"], prefix)
+            # Extract the patch the agent produced
+            model_patch = extract_patch(workspace_dir, instance["base_commit"], prefix)
 
-        # Save the patch
-        (instance_output_dir / "model_patch.diff").write_text(model_patch)
+            # Save the patch
+            (instance_output_dir / "model_patch.diff").write_text(model_patch)
 
-        if result.returncode != 0:
+            if result.returncode != 0:
+                return (
+                    False,
+                    f"Agent failed with exit code {result.returncode}",
+                    str(agent_run_dir),
+                    model_patch,
+                )
+
+            return True, None, str(agent_run_dir), model_patch
+
+        except subprocess.TimeoutExpired:
+            # Still try to extract patch even on timeout
+            model_patch = extract_patch(workspace_dir, instance["base_commit"], prefix)
+            (instance_output_dir / "model_patch.diff").write_text(model_patch)
             return (
                 False,
-                f"Agent failed with exit code {result.returncode}",
+                "Agent execution timed out after 30 minutes",
                 str(agent_run_dir),
                 model_patch,
             )
+        except Exception as e:
+            return False, f"Agent execution failed: {str(e)}", str(agent_run_dir), ""
 
-        return True, None, str(agent_run_dir), model_patch
+    # Pi Mono vehicle via RPC mode (+ this repo's manager-bridge extension)
+    try:
+        repo_root = Path(__file__).resolve().parent
+        extension_path = (repo_root / "integrations" / "pi_mono" / "extensions" / "manager_bridge" / "index.ts").resolve()
+        manager_log_dir = (agent_run_dir / "pi_mono_bridge").resolve()
+        transcript_path = agent_run_dir / "pi_rpc_transcript.jsonl"
 
-    except subprocess.TimeoutExpired:
-        # Still try to extract patch even on timeout
+        pi_args: list[str] = [
+            "-e",
+            str(extension_path),
+            "--manager-url",
+            "stdio:",
+            "--manager-log-dir",
+            str(manager_log_dir),
+            "--manager-events",
+            "session_start,before_agent_start,tool_call,turn_end",
+            "--manager-steer-policy",
+            "off",
+        ]
+        if config.pi_provider:
+            pi_args.extend(["--provider", config.pi_provider])
+        if config.pi_model:
+            pi_args.extend(["--model", config.pi_model])
+        if config.pi_thinking_level:
+            pi_args.extend(["--thinking", config.pi_thinking_level])
+
+        prefixed_print(prefix, f"Running pi (RPC) (timeout {config.pi_timeout_seconds}s)...")
+        pi_result = run_pi_rpc_prompt(
+            message=user_request,
+            cwd=workspace_dir,
+            transcript_path=transcript_path,
+            pi_args=pi_args,
+            timeout_seconds=config.pi_timeout_seconds,
+        )
+
+        (agent_run_dir / "pi_agent_end.json").write_text(
+            json.dumps(pi_result.agent_end_event or {}, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+        # Best-effort: extract stderr lines from transcript for failure summaries.
+        stderr_out: list[str] = []
+        with suppress(FileNotFoundError):
+            for line in transcript_path.read_text(encoding="utf-8").splitlines():
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("stream") == "stderr" and isinstance(entry.get("data"), str):
+                    stderr_out.append(entry["data"])
+        (instance_output_dir / "agent_stdout.txt").write_text("", encoding="utf-8")
+        (instance_output_dir / "agent_stderr.txt").write_text("".join(stderr_out), encoding="utf-8")
+
         model_patch = extract_patch(workspace_dir, instance["base_commit"], prefix)
         (instance_output_dir / "model_patch.diff").write_text(model_patch)
-        return (
-            False,
-            "Agent execution timed out after 30 minutes",
-            str(agent_run_dir),
-            model_patch,
-        )
+
+        if not pi_result.ok:
+            return False, pi_result.error or "pi rpc run failed", str(agent_run_dir), model_patch
+
+        return True, None, str(agent_run_dir), model_patch
+    except subprocess.TimeoutExpired:
+        model_patch = extract_patch(workspace_dir, instance["base_commit"], prefix)
+        (instance_output_dir / "model_patch.diff").write_text(model_patch)
+        return False, "pi rpc timed out", str(agent_run_dir), model_patch
     except Exception as e:
-        return False, f"Agent execution failed: {str(e)}", str(agent_run_dir), ""
+        return False, f"pi rpc execution failed: {e}", str(agent_run_dir), ""
 
 
 def run_tests(
@@ -1069,6 +1145,35 @@ def main():
         default="opencode-acp",
         help="Execution actor: 'bash' (local) or 'opencode-acp'",
     )
+    parser.add_argument(
+        "--agent-impl",
+        type=str,
+        choices=["online_replay", "pi_rpc"],
+        default="online_replay",
+        help="Agent implementation: online_replay (manager loop) or pi_rpc (Pi Mono vehicle via RPC mode)",
+    )
+    parser.add_argument(
+        "--pi-provider",
+        default=None,
+        help="(pi_rpc) Provider for pi (overrides local pi settings)",
+    )
+    parser.add_argument(
+        "--pi-model",
+        default=None,
+        help="(pi_rpc) Model for pi (overrides local pi settings)",
+    )
+    parser.add_argument(
+        "--pi-thinking-level",
+        default=None,
+        choices=["off", "minimal", "low", "medium", "high", "xhigh"],
+        help="(pi_rpc) Thinking level for pi",
+    )
+    parser.add_argument(
+        "--pi-timeout-seconds",
+        type=int,
+        default=1800,
+        help="(pi_rpc) Timeout in seconds (default: 1800)",
+    )
 
     parser.add_argument(
         "--output-dir",
@@ -1123,6 +1228,11 @@ def main():
         phase=args.phase,
         interaction_mode=args.interaction_mode,
         actor=args.actor,
+        agent_impl=args.agent_impl,  # type: ignore[arg-type]
+        pi_provider=args.pi_provider,
+        pi_model=args.pi_model,
+        pi_thinking_level=args.pi_thinking_level,
+        pi_timeout_seconds=args.pi_timeout_seconds,
         output_dir=eval_dir,
         workspace_root=workspace_root,
         started_at=datetime.now().isoformat(),
@@ -1144,6 +1254,7 @@ def main():
     print(f"Max steps: {config.max_steps}")
     print(f"Num instances: {config.num_instances}")
     print(f"Actor: {config.actor}")
+    print(f"Agent impl: {config.agent_impl}")
     print(f"Evaluation mode: {config.evaluation_mode.upper()}")
     if config.evaluation_mode == "docker":
         print(f"Max workers: {config.max_workers}")

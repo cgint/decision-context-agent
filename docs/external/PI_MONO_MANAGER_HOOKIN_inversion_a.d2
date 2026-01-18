@@ -1,0 +1,10 @@
+direction: right
+
+Pi: "Pi Mono\n(main agent loop)"
+Ext: "Pi Extension\n(Manager-in-process)\n- supervision\n- tracing\n- pattern synthesis"
+Tools: "Workspace tools\n(read/edit/bash)"
+
+Pi -> Ext: "events\n(before_agent_start, context,\n tool_call, tool_result, turn_end)"
+Ext -> Pi: "steer\n- modify systemPrompt/messages\n- send steer messages\n- block tool calls"
+Pi -> Tools: "tool execution"
+Tools -> Pi: "results"

@@ -1,0 +1,13 @@
+direction: right
+
+Pi: "Pi Mono\n(main agent loop)"
+Ext: "Pi Extension\n(manager-bridge)"
+Mgr: "Decision Context Manager\n(Python, this repo)\nDSPy + supervision logic"
+Tools: "Workspace tools\n(read/edit/bash)"
+
+Pi -> Ext: "events + evidence"
+Ext -> Mgr: "event stream (compact)\n+ tool results (anchors)"
+Mgr -> Ext: "steering note\n+ policy decision"
+Ext -> Pi: "inject guidance\n(before_agent_start/context)\n+ optional tool_call blocks"
+Pi -> Tools: "tool execution"
+Tools -> Pi: "results"

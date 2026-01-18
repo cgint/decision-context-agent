@@ -1,8 +1,17 @@
+# ruff: noqa: E402
+
 import os
-import dspy
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Literal
+
+# Ensure DSPy cache stays inside the repo (avoids writing to home-dir in restricted envs).
+os.environ.setdefault(
+    "DSPY_CACHEDIR",
+    str((Path(__file__).resolve().parent / "data" / "dspy_cache").resolve()),
+)
+
+import dspy
 
 TYPE_REASONING_EFFORT = Literal["low", "medium", "high", "disable"] | None
 
