@@ -439,18 +439,32 @@ def run_agent(
         (success, error_message, agent_run_dir, model_patch)
     """
     problem_statement = instance["problem_statement"]
+    fail_to_pass = instance.get("FAIL_TO_PASS", "")
 
     # Prepare user request
-    user_request = (
-        f"Fix the following GitHub issue in this repository:\n\n"
-        f"{problem_statement}\n\n"
-        f"Instructions:\n"
-        f"1. Analyze the issue and understand what needs to be fixed\n"
-        f"2. Locate the relevant code files\n"
-        f"3. Make the necessary code changes to fix the issue\n"
-        f"4. Ensure your changes are minimal and targeted\n"
-        f"Do not run tests - just fix the issue."
+    user_request_parts: list[str] = [
+        "Fix the following GitHub issue in this repository:\n\n",
+        problem_statement,
+        "\n\n",
+    ]
+    if fail_to_pass:
+        user_request_parts.extend(
+            [
+                "SWE-bench context:\n",
+                f"- FAIL_TO_PASS (focus on these tests): {fail_to_pass}\n\n",
+            ]
+        )
+    user_request_parts.extend(
+        [
+            "Instructions:\n",
+            "1. Analyze the issue and understand what needs to be fixed\n",
+            "2. Locate the relevant code files\n",
+            "3. Make the necessary code changes to fix the issue\n",
+            "4. Ensure your changes are minimal and targeted\n",
+            "If needed, run only the failing tests (FAIL_TO_PASS); avoid running the full suite.",
+        ]
     )
+    user_request = "".join(user_request_parts)
 
     agent_run_dir = instance_output_dir / "agent_run"
     agent_run_dir.mkdir(parents=True, exist_ok=True)
@@ -524,6 +538,28 @@ def run_agent(
 
     # Pi Mono vehicle via RPC mode (+ this repo's manager-bridge extension)
     try:
+        def _summarize_pi_tool_errors(agent_end_event: dict) -> list[str]:
+            errors: list[str] = []
+            for msg in agent_end_event.get("messages", []) or []:
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("role") != "toolResult" or not msg.get("isError"):
+                    continue
+
+                tool_name = msg.get("toolName") or "tool"
+                chunks = msg.get("content") or []
+                text_bits: list[str] = []
+                if isinstance(chunks, list):
+                    for chunk in chunks:
+                        if isinstance(chunk, dict) and isinstance(chunk.get("text"), str):
+                            text_bits.append(chunk["text"])
+                text = "\n".join(text_bits).strip()
+                if not text:
+                    text = json.dumps(msg.get("details") or {}, ensure_ascii=False)
+
+                errors.append(f"[pi tool error] {tool_name}: {text}")
+            return errors
+
         repo_root = Path(__file__).resolve().parent
         extension_path = (repo_root / "integrations" / "pi_mono" / "extensions" / "manager_bridge" / "index.ts").resolve()
         transcript_path = agent_run_dir / "pi_rpc_transcript.jsonl"
@@ -576,8 +612,16 @@ def run_agent(
                     continue
                 if entry.get("stream") == "stderr" and isinstance(entry.get("data"), str):
                     stderr_out.append(entry["data"])
+
+        pi_tool_errors: list[str] = []
+        if pi_result.agent_end_event and isinstance(pi_result.agent_end_event, dict):
+            pi_tool_errors = _summarize_pi_tool_errors(pi_result.agent_end_event)
+
         (instance_output_dir / "agent_stdout.txt").write_text("", encoding="utf-8")
-        (instance_output_dir / "agent_stderr.txt").write_text("".join(stderr_out), encoding="utf-8")
+        (instance_output_dir / "agent_stderr.txt").write_text(
+            ("\n".join(pi_tool_errors) + ("\n" if pi_tool_errors else "")) + "".join(stderr_out),
+            encoding="utf-8",
+        )
 
         model_patch = extract_patch(workspace_dir, instance["base_commit"], prefix)
         model_patch = normalize_unified_diff(model_patch)

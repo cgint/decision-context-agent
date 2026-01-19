@@ -139,6 +139,10 @@ Per-instance agent artifacts are stored under:
 - `data/swebench_eval/<eval_id>/instances/<instance_id>/model_patch.diff`
 - `data/swebench_eval/<eval_id>/instances/<instance_id>/agent_run/` (agent transcript/logs; contents depend on `--agent-impl`)
 
+## Prompting Notes (SWE-bench)
+
+When running via `run_swebench_eval.py`, the agent prompt includes `FAIL_TO_PASS` (when present in the dataset instance) so the agent can focus on the relevant tests. The prompt also allows running only the failing tests (and discourages running the full suite).
+
 ## Troubleshooting
 
 ### Dataset download fails
